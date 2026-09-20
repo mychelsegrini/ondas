@@ -35,6 +35,17 @@ interface AudioGraph {
 const CONTINUOUS_LEVEL = 0.18;
 const RAMP_SECONDS = 0.04;
 
+export interface AutoPlayOptions {
+  /** Total samples to sweep across. */
+  sampleCount: number;
+  /** Sample the sweep starts from, so it can resume where the cursor sits. */
+  from?: number;
+  durationMs: number;
+  /** Called on every frame with the sample the cursor should be on. */
+  onTick: (index: number, progress: number) => void;
+  onDone?: () => void;
+}
+
 /**
  * Owns the whole Tone.js graph for the continuous "cursor tone" plus the three
  * earcons. Tone.js is imported dynamically and the nodes are only built after a
@@ -42,11 +53,18 @@ const RAMP_SECONDS = 0.04;
  */
 export function useSonification() {
   const graphRef = useRef<AudioGraph | null>(null);
+  /** In-flight construction, shared so two fast starts cannot build two graphs. */
+  const pendingRef = useRef<Promise<boolean> | null>(null);
+  const disposedRef = useRef(false);
+  const autoPlayFrameRef = useRef<number | null>(null);
+  /** Invalidates an in-flight sweep so a later start or stop always wins. */
+  const autoPlayRunRef = useRef(0);
   const [status, setStatus] = useState<AudioStatus>("idle");
   const [isToneOn, setIsToneOn] = useState(false);
+  const [isAutoPlaying, setIsAutoPlaying] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const start = useCallback(async (): Promise<boolean> => {
+  const startGraph = useCallback(async (): Promise<boolean> => {
     if (graphRef.current) return true;
     setStatus("starting");
     try {
@@ -102,7 +120,7 @@ export function useSonification() {
         volume: -22,
       }).toDestination();
 
-      graphRef.current = {
+      const graph: AudioGraph = {
         Tone,
         sine,
         saw,
@@ -118,6 +136,26 @@ export function useSonification() {
         glitchBuzz,
         glitchFilter,
       };
+      if (disposedRef.current) {
+        [graph.sine, graph.saw].forEach((osc) => {
+          try {
+            osc.stop();
+          } catch {
+            /* never started */
+          }
+        });
+        Object.values(graph).forEach((node) => {
+          if (node && typeof node === "object" && "dispose" in node) {
+            try {
+              (node as { dispose: () => void }).dispose();
+            } catch {
+              /* already torn down */
+            }
+          }
+        });
+        return false;
+      }
+      graphRef.current = graph;
       setStatus("ready");
       setError(null);
       return true;
@@ -127,6 +165,16 @@ export function useSonification() {
       return false;
     }
   }, []);
+
+  const start = useCallback((): Promise<boolean> => {
+    if (graphRef.current) return Promise.resolve(true);
+    if (pendingRef.current) return pendingRef.current;
+    const pending = startGraph().finally(() => {
+      pendingRef.current = null;
+    });
+    pendingRef.current = pending;
+    return pending;
+  }, [startGraph]);
 
   const update = useCallback((params: ToneUpdate) => {
     const graph = graphRef.current;
@@ -156,6 +204,66 @@ export function useSonification() {
     setIsToneOn(false);
   }, []);
 
+  const stopAutoPlay = useCallback(() => {
+    autoPlayRunRef.current += 1;
+    if (autoPlayFrameRef.current !== null) {
+      cancelAnimationFrame(autoPlayFrameRef.current);
+      autoPlayFrameRef.current = null;
+    }
+    setIsAutoPlaying(false);
+  }, []);
+
+  /**
+   * Sweeps the cursor across the domain on its own animation loop, reporting
+   * each sample back through `onTick` so the caller stays the single source of
+   * truth for cursor position. Manual movement just calls `stopAutoPlay`.
+   */
+  const autoPlay = useCallback(
+    async (options: AutoPlayOptions) => {
+      const { sampleCount, from = 0, durationMs, onTick, onDone } = options;
+      const last = sampleCount - 1;
+      if (last < 1) return;
+
+      const runId = autoPlayRunRef.current + 1;
+      autoPlayRunRef.current = runId;
+
+      const ready = await start();
+      if (!ready || disposedRef.current || autoPlayRunRef.current !== runId) return;
+
+      if (autoPlayFrameRef.current !== null) {
+        cancelAnimationFrame(autoPlayFrameRef.current);
+        autoPlayFrameRef.current = null;
+      }
+      playTone();
+
+      // Starting from the very end would be a no-op, so replay from the start.
+      const startIndex = from >= last || from < 0 ? 0 : from;
+      // Keep a constant samples-per-second when resuming from mid-curve.
+      const span = Math.max(50, durationMs * (1 - startIndex / last));
+      const startedAt = performance.now();
+      setIsAutoPlaying(true);
+
+      const tick = (now: number) => {
+        if (autoPlayRunRef.current !== runId || disposedRef.current) return;
+        // rAF timestamps are not guaranteed to follow performance.now(), so
+        // the progress is clamped at both ends before it indexes anything.
+        const progress = Math.max(0, Math.min(1, (now - startedAt) / span));
+        onTick(Math.round(startIndex + progress * (last - startIndex)), progress);
+
+        if (progress >= 1) {
+          autoPlayFrameRef.current = null;
+          setIsAutoPlaying(false);
+          onDone?.();
+          return;
+        }
+        autoPlayFrameRef.current = requestAnimationFrame(tick);
+      };
+
+      autoPlayFrameRef.current = requestAnimationFrame(tick);
+    },
+    [playTone, start],
+  );
+
   const playEarcon = useCallback((kind: EarconKind) => {
     const graph = graphRef.current;
     if (!graph) return;
@@ -177,10 +285,22 @@ export function useSonification() {
   }, []);
 
   useEffect(() => {
+    disposedRef.current = false;
     return () => {
+      disposedRef.current = true;
+      autoPlayRunRef.current += 1;
+      if (autoPlayFrameRef.current !== null) cancelAnimationFrame(autoPlayFrameRef.current);
+      autoPlayFrameRef.current = null;
       const graph = graphRef.current;
       if (!graph) return;
       graphRef.current = null;
+      [graph.sine, graph.saw].forEach((osc) => {
+        try {
+          osc.stop();
+        } catch {
+          /* already stopped */
+        }
+      });
       [
         graph.sine,
         graph.saw,
@@ -210,10 +330,13 @@ export function useSonification() {
     error,
     isReady: status === "ready",
     isToneOn,
+    isAutoPlaying,
     start,
     update,
     playTone,
     stopTone,
     playEarcon,
+    autoPlay,
+    stopAutoPlay,
   };
 }

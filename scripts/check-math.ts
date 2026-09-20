@@ -2,6 +2,7 @@
  * Sanity check for the analysis and voice engines: npm run check:math
  */
 import { analyzeFunction, formatNumber } from "@/lib/math/analyze";
+import { analyzeSurface } from "@/lib/math/surface";
 import { parseVoiceCommand } from "@/lib/voice/parseCommand";
 
 const CASES: Array<[string, number, number]> = [
@@ -57,9 +58,25 @@ for (const phrase of [
   "open the 2d shapes library",
   "open the 3d shapes library",
   "open the functions explorer",
+  "open the surface explorer",
+  "auto play",
+  "set the surface to sine x times cosine y",
+  "plot sine of x times cosine of y",
   "where am i",
   "stop",
   "banana",
 ]) {
   console.log(`  "${phrase}" ->`, JSON.stringify(parseVoiceCommand(phrase)));
+}
+
+console.log("\nSurfaces:");
+for (const expression of ["sin(x)*cos(y)", "x^2 + y^2", "x^2 - y^2", "1/(x*y)"]) {
+  const analysis = analyzeSurface(expression, 5, 3, 360);
+  const features = analysis.features
+    .slice(0, 6)
+    .map((f) => `${f.kind}@(${formatNumber(f.x, 2)},${formatNumber(f.y, 2)})`)
+    .join(", ");
+  console.log(
+    `${expression.padEnd(16)} z:[${formatNumber(analysis.zMin)}, ${formatNumber(analysis.zMax)}]  undefined:${(analysis.undefinedRatio * 100).toFixed(0)}%  ${analysis.error ?? (features || "none")}`,
+  );
 }

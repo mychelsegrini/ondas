@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { RandomPointVisual } from "@/components/RandomPointVisual";
 import { ShapeVisual } from "@/components/ShapeVisual";
-import { useVoiceCommands, useVoiceHandler } from "@/components/VoiceCommandProvider";
+import { useVoiceCommands, useVoiceHandler } from "@/contexts/VoiceContext";
 import { useShapeSonification } from "@/lib/audio/useShapeSonification";
 import {
   SHAPES,

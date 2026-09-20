@@ -2,13 +2,13 @@ import type { Metadata } from "next";
 
 import "./globals.css";
 import { SiteHeader } from "@/components/SiteHeader";
-import { VoiceCommandProvider } from "@/components/VoiceCommandProvider";
+import { VoiceProvider } from "@/contexts/VoiceContext";
 import { VoiceBar } from "@/components/VoiceBar";
 
 export const metadata: Metadata = {
   title: "Ondas — Hear the shape of mathematics",
   description:
-    "Ondas turns 3D solids and 2D functions into spatial sound, so geometry and calculus can be explored by ear.",
+    "Ondas turns solids, curves and surfaces into spatial sound, so geometry and calculus can be explored by ear.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -21,7 +21,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         are still reported.
       */}
       <body className="min-h-screen bg-zinc-950 text-zinc-200 antialiased" suppressHydrationWarning>
-        <VoiceCommandProvider>
+        <VoiceProvider>
           <a
             href="#main"
             className="sr-only-focusable fixed left-4 top-4 z-50 rounded-md bg-cyan-400 px-4 py-2 font-medium text-zinc-950"
@@ -35,7 +35,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </main>
             <VoiceBar />
           </div>
-        </VoiceCommandProvider>
+        </VoiceProvider>
       </body>
     </html>
   );

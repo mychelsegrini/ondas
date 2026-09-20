@@ -14,6 +14,7 @@ import {
 
 import { SHAPES_2D } from "@/lib/shapes2d";
 import {
+  pageToRoute,
   parseVoiceCommand,
   VOICE_EXAMPLES,
   type VoiceCommand,
@@ -23,18 +24,25 @@ import {
 /** Returning true means "handled, stop propagating to other handlers". */
 export type VoiceHandler = (command: VoiceCommand) => boolean;
 
+/** Where the interpretation came from, shown in the UI so it is never a mystery. */
+export type CommandSource = "llm" | "local";
+
 const PAGE_LABELS: Record<VoicePage, string> = {
   home: "home page",
   functions: "functions explorer",
   "2d-shapes": "2D shapes library",
   "3d-shapes": "3D shapes library",
+  multivariable: "surface explorer",
 };
 
 interface VoiceContextValue {
   isSupported: boolean;
   isListening: boolean;
+  /** True while a transcript is being routed by the language model. */
+  isRouting: boolean;
   transcript: string;
   lastCommand: VoiceCommand | null;
+  lastSource: CommandSource | null;
   error: string | null;
   startListening: () => void;
   stopListening: () => void;
@@ -44,20 +52,26 @@ interface VoiceContextValue {
   /** Sends a message to the global polite live region. */
   announce: (message: string) => void;
   announcement: string;
+  /** Routes a phrase exactly as if it had been spoken. Useful for testing. */
+  submitTranscript: (text: string) => Promise<void>;
 }
 
-const VoiceCommandContext = createContext<VoiceContextValue | null>(null);
+const VoiceContext = createContext<VoiceContextValue | null>(null);
 
-export function VoiceCommandProvider({ children }: { children: ReactNode }) {
+export function VoiceProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const handlersRef = useRef<VoiceHandler[]>([]);
   const shouldListenRef = useRef(false);
+  /** Guards against an earlier, slower round trip overwriting a newer one. */
+  const requestIdRef = useRef(0);
 
   const [isSupported, setIsSupported] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [isRouting, setIsRouting] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [lastCommand, setLastCommand] = useState<VoiceCommand | null>(null);
+  const [lastSource, setLastSource] = useState<CommandSource | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
 
@@ -73,7 +87,8 @@ export function VoiceCommandProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const dispatch = useCallback(
+  /** Offers a command to the mounted pages, then to the app-wide fallbacks. */
+  const applyCommand = useCallback(
     (command: VoiceCommand) => {
       setLastCommand(command);
 
@@ -83,7 +98,7 @@ export function VoiceCommandProvider({ children }: { children: ReactNode }) {
 
       // Fallbacks that work from anywhere in the app.
       if (command.type === "navigate") {
-        router.push(command.page === "home" ? "/" : `/${command.page}`);
+        router.push(pageToRoute(command.page));
         announce(`Opening the ${PAGE_LABELS[command.page]}.`);
         return;
       }
@@ -93,12 +108,31 @@ export function VoiceCommandProvider({ children }: { children: ReactNode }) {
         router.push(`/${is2D ? "2d-shapes" : "3d-shapes"}?shape=${command.shapeId}`);
         return;
       }
+      if (command.type === "setMultiFunction") {
+        // Carry the equation across the navigation so it is not lost.
+        router.push(`/multivariable?f=${encodeURIComponent(command.expression)}`);
+        announce(`Opening the surface explorer with z equals ${command.expression}.`);
+        return;
+      }
+      if (command.type === "setFunction") {
+        router.push(`/functions?f=${encodeURIComponent(command.expression)}`);
+        announce(`Opening the functions explorer with y equals ${command.expression}.`);
+        return;
+      }
+      if (command.type === "autoPlay") {
+        router.push("/functions?play=1");
+        announce("Opening the functions explorer to play the curve.");
+        return;
+      }
+      if (command.type === "setSpeed") {
+        router.push(`/functions?speed=${command.value}`);
+        announce(`Opening the functions explorer at ${command.value} times speed.`);
+        return;
+      }
       if (
-        command.type === "setFunction" ||
         command.type === "setXMin" ||
         command.type === "setXMax" ||
-        command.type === "setDomain" ||
-        command.type === "setSpeed"
+        command.type === "setDomain"
       ) {
         router.push("/functions");
         announce("Opening the functions explorer. Please repeat the command.");
@@ -114,6 +148,45 @@ export function VoiceCommandProvider({ children }: { children: ReactNode }) {
     },
     [announce, router],
   );
+
+  /**
+   * Sends the transcript to the language model router and applies whatever
+   * comes back. The deterministic parser runs locally if the round trip fails,
+   * so voice control survives an outage, a missing key, or being offline.
+   */
+  const submitTranscript = useCallback(
+    async (text: string) => {
+      const phrase = text.trim();
+      if (!phrase) return;
+
+      const requestId = requestIdRef.current + 1;
+      requestIdRef.current = requestId;
+      setIsRouting(true);
+
+      try {
+        const response = await fetch("/api/voice", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transcript: phrase }),
+        });
+        if (!response.ok) throw new Error(`Voice router returned ${response.status}`);
+        const data = (await response.json()) as { command: VoiceCommand; source: CommandSource };
+        if (requestIdRef.current !== requestId) return;
+        setLastSource(data.source);
+        applyCommand(data.command);
+      } catch {
+        if (requestIdRef.current !== requestId) return;
+        setLastSource("local");
+        applyCommand(parseVoiceCommand(phrase));
+      } finally {
+        if (requestIdRef.current === requestId) setIsRouting(false);
+      }
+    },
+    [applyCommand],
+  );
+
+  const submitRef = useRef(submitTranscript);
+  submitRef.current = submitTranscript;
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -135,9 +208,7 @@ export function VoiceCommandProvider({ children }: { children: ReactNode }) {
         const result = event.results[i];
         const text = result[0].transcript.trim();
         setTranscript(text);
-        if (result.isFinal && text) {
-          dispatch(parseVoiceCommand(text));
-        }
+        if (result.isFinal && text) void submitRef.current(text);
       }
     };
 
@@ -178,7 +249,7 @@ export function VoiceCommandProvider({ children }: { children: ReactNode }) {
       }
       recognitionRef.current = null;
     };
-  }, [dispatch]);
+  }, []);
 
   const startListening = useCallback(() => {
     const recognition = recognitionRef.current;
@@ -229,8 +300,10 @@ export function VoiceCommandProvider({ children }: { children: ReactNode }) {
     () => ({
       isSupported,
       isListening,
+      isRouting,
       transcript,
       lastCommand,
+      lastSource,
       error,
       startListening,
       stopListening,
@@ -238,36 +311,40 @@ export function VoiceCommandProvider({ children }: { children: ReactNode }) {
       registerHandler,
       announce,
       announcement,
+      submitTranscript,
     }),
     [
       announce,
       announcement,
       error,
       isListening,
+      isRouting,
       isSupported,
       lastCommand,
+      lastSource,
       registerHandler,
       startListening,
       stopListening,
+      submitTranscript,
       toggleListening,
       transcript,
     ],
   );
 
   return (
-    <VoiceCommandContext.Provider value={value}>
+    <VoiceContext.Provider value={value}>
       {children}
       <p aria-live="polite" aria-atomic="true" className="sr-only">
         {announcement}
       </p>
-    </VoiceCommandContext.Provider>
+    </VoiceContext.Provider>
   );
 }
 
 export function useVoiceCommands(): VoiceContextValue {
-  const context = useContext(VoiceCommandContext);
+  const context = useContext(VoiceContext);
   if (!context) {
-    throw new Error("useVoiceCommands must be used inside a VoiceCommandProvider.");
+    throw new Error("useVoiceCommands must be used inside a VoiceProvider.");
   }
   return context;
 }

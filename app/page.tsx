@@ -21,6 +21,11 @@ const FEATURES = [
     body: "A crystalline bell marks a local maximum, a deep thud marks a local minimum, a soft chord marks an inflection point, and a harsh glitch marks a discontinuity.",
     accent: "text-amber-300",
   },
+  {
+    title: "Surfaces become space",
+    body: "z = f(x, y) is scanned along an Archimedean spiral. Height is pitch, x is left and right, y is in front of and behind your head.",
+    accent: "text-sky-300",
+  },
 ];
 
 export default function HomePage() {
@@ -34,9 +39,9 @@ export default function HomePage() {
           See mathematics <span className="text-cyan-400">with your ears</span>.
         </h1>
         <p className="mt-6 text-lg leading-relaxed text-zinc-400">
-          Ondas translates three dimensional solids and two dimensional functions into spatial sound
-          in real time. Geometry becomes something you can hear, follow and navigate, entirely from
-          the keyboard or by voice.
+          Ondas translates solids, plane figures, curves and surfaces into spatial sound in real
+          time. Geometry becomes something you can hear, follow and navigate, entirely from the
+          keyboard or by voice.
         </p>
 
         <div className="mt-10 flex flex-wrap gap-4">
@@ -45,6 +50,12 @@ export default function HomePage() {
             className="rounded-lg bg-cyan-400 px-6 py-3 font-semibold text-zinc-950 transition-colors hover:bg-cyan-300"
           >
             Explore 2D functions
+          </Link>
+          <Link
+            href="/multivariable"
+            className="rounded-lg border border-zinc-700 bg-zinc-900 px-6 py-3 font-semibold text-zinc-100 transition-colors hover:bg-zinc-800"
+          >
+            Explore surfaces f(x, y)
           </Link>
           <Link
             href="/2d-shapes"

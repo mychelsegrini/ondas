@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Shape2DVisual } from "@/components/Shape2DVisual";
-import { useVoiceCommands, useVoiceHandler } from "@/components/VoiceCommandProvider";
+import { useVoiceCommands, useVoiceHandler } from "@/contexts/VoiceContext";
 import { usePolygonSonification } from "@/lib/audio/usePolygonSonification";
 import { SHAPES_2D, getShape2D, type Shape2D } from "@/lib/shapes2d";
 

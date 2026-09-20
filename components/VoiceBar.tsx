@@ -2,12 +2,20 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 
-import { useVoiceCommands } from "@/components/VoiceCommandProvider";
+import { useVoiceCommands } from "@/contexts/VoiceContext";
 import { VOICE_EXAMPLES } from "@/lib/voice/parseCommand";
 
 export function VoiceBar() {
-  const { isSupported, isListening, transcript, toggleListening, error, announcement } =
-    useVoiceCommands();
+  const {
+    isSupported,
+    isListening,
+    isRouting,
+    transcript,
+    lastSource,
+    toggleListening,
+    error,
+    announcement,
+  } = useVoiceCommands();
 
   return (
     <div className="sticky bottom-0 z-40 border-t border-zinc-800/80 bg-zinc-950/90 backdrop-blur">
@@ -52,6 +60,16 @@ export function VoiceBar() {
                 Voice commands need the Web Speech API. Use Chrome or Edge; every feature also works
                 from the keyboard.
               </p>
+            ) : isRouting ? (
+              <motion.p
+                key="routing"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="truncate text-sm text-zinc-400"
+              >
+                Routing “{transcript}”…
+              </motion.p>
             ) : transcript ? (
               <motion.p
                 key={transcript}
@@ -61,6 +79,11 @@ export function VoiceBar() {
               >
                 <span className="text-zinc-500">Heard: </span>
                 <span className="font-mono text-cyan-300">{transcript}</span>
+                {lastSource ? (
+                  <span className="ml-2 text-xs text-zinc-600">
+                    {lastSource === "llm" ? "via Muse" : "via local parser"}
+                  </span>
+                ) : null}
               </motion.p>
             ) : (
               <p className="truncate text-sm text-zinc-500">

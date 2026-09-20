@@ -1,9 +1,10 @@
 "use client";
 
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { CRITICAL_COLORS, DISCONTINUITY_COLOR, FunctionGraph } from "@/components/FunctionGraph";
-import { useVoiceCommands, useVoiceHandler } from "@/components/VoiceCommandProvider";
+import { useVoiceCommands, useVoiceHandler } from "@/contexts/VoiceContext";
 import { slopeToTimbre, xToPan, yToFrequency, type EarconKind } from "@/lib/audio/mappings";
 import { useSonification } from "@/lib/audio/useSonification";
 import {
@@ -54,9 +55,21 @@ const BASE_STEP = 6;
 const COARSE_FACTOR = 5;
 
 export function FunctionExplorer() {
+  const searchParams = useSearchParams();
   const { announce } = useVoiceCommands();
-  const { isReady, status, error: audioError, start, update, playTone, stopTone, playEarcon } =
-    useSonification();
+  const {
+    isReady,
+    status,
+    error: audioError,
+    isAutoPlaying,
+    start,
+    update,
+    playTone,
+    stopTone,
+    playEarcon,
+    autoPlay,
+    stopAutoPlay,
+  } = useSonification();
 
   const [expression, setExpression] = useState("sin(x) * x");
   const [xMin, setXMin] = useState(-10);
@@ -65,7 +78,6 @@ export function FunctionExplorer() {
   const [xMinDraft, setXMinDraft] = useState("-10");
   const [xMaxDraft, setXMaxDraft] = useState("10");
   const [cursorIndex, setCursorIndex] = useState(0);
-  const [isSweeping, setIsSweeping] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [currentSonificationSpeed, setCurrentSonificationSpeed] = useState(1);
   const [speedDraft, setSpeedDraft] = useState("1");
@@ -74,7 +86,11 @@ export function FunctionExplorer() {
   const previousIndexRef = useRef(0);
   const lastEarconRef = useRef<number | null>(null);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const sweepFrameRef = useRef<number | null>(null);
+  /** Lets auto play resume from the cursor without re-creating the callback. */
+  const cursorIndexRef = useRef(0);
+  cursorIndexRef.current = cursorIndex;
+
+  const isSweeping = isAutoPlaying;
 
   const analysis = useMemo(() => analyzeFunction(expression, xMin, xMax), [expression, xMin, xMax]);
   const sampleCount = analysis.points.length;
@@ -163,19 +179,21 @@ export function FunctionExplorer() {
   const moveCursor = useCallback(
     (delta: number) => {
       if (sampleCount === 0) return;
+      stopAutoPlay();
       setCursorIndex((index) => Math.min(sampleCount - 1, Math.max(0, index + delta)));
       markActivity();
     },
-    [markActivity, sampleCount],
+    [markActivity, sampleCount, stopAutoPlay],
   );
 
   const goToIndex = useCallback(
     (index: number) => {
       if (sampleCount === 0) return;
+      stopAutoPlay();
       setCursorIndex(Math.min(sampleCount - 1, Math.max(0, index)));
       markActivity();
     },
-    [markActivity, sampleCount],
+    [markActivity, sampleCount, stopAutoPlay],
   );
 
   const applySpeed = useCallback(
@@ -189,37 +207,22 @@ export function FunctionExplorer() {
   );
 
   const stopSweep = useCallback(() => {
-    if (sweepFrameRef.current !== null) {
-      cancelAnimationFrame(sweepFrameRef.current);
-      sweepFrameRef.current = null;
-    }
-    setIsSweeping(false);
-  }, []);
+    stopAutoPlay();
+  }, [stopAutoPlay]);
 
   const startSweep = useCallback(async () => {
-    if (!isReady) {
-      const started = await start();
-      if (!started) return;
-    }
-    stopSweep();
-    setIsSweeping(true);
-    playTone();
-    const startedAt = performance.now();
-    // The sweep obeys the same speed setting as manual movement.
-    const durationMs = (SWEEP_SECONDS * 1000) / currentSonificationSpeed;
-    const tick = (now: number) => {
-      const progress = Math.min(1, (now - startedAt) / durationMs);
-      setCursorIndex(Math.round(progress * (sampleCount - 1)));
-      if (progress >= 1) {
-        sweepFrameRef.current = null;
-        setIsSweeping(false);
-        markActivity();
-        return;
-      }
-      sweepFrameRef.current = requestAnimationFrame(tick);
-    };
-    sweepFrameRef.current = requestAnimationFrame(tick);
-  }, [currentSonificationSpeed, isReady, markActivity, playTone, sampleCount, start, stopSweep]);
+    // The sweep is driven by the audio hook, so a voice command and the Space
+    // key reach exactly the same code path.
+    if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    await autoPlay({
+      sampleCount,
+      from: cursorIndexRef.current,
+      // Auto play obeys the same speed setting as manual movement.
+      durationMs: (SWEEP_SECONDS * 1000) / currentSonificationSpeed,
+      onTick: (index) => setCursorIndex(index),
+      onDone: () => markActivity(),
+    });
+  }, [autoPlay, currentSonificationSpeed, markActivity, sampleCount]);
 
   const jumpToCritical = useCallback(
     (target: "max" | "min" | "inflection" | "next" | "previous") => {
@@ -275,6 +278,7 @@ export function FunctionExplorer() {
         announce(candidate.error);
         return false;
       }
+      stopSweep();
       setFormError(null);
       setExpression(nextExpression);
       setXMin(nextXMin);
@@ -287,8 +291,30 @@ export function FunctionExplorer() {
       );
       return true;
     },
-    [announce],
+    [announce, stopSweep],
   );
+
+  const requestedFn = searchParams.get("f");
+  const requestedPlay = searchParams.get("play");
+  const requestedSpeed = searchParams.get("speed");
+  const playedFromQuery = useRef(false);
+
+  useEffect(() => {
+    if (requestedFn) applyDraft(requestedFn, xMin, xMax);
+    if (requestedSpeed) {
+      const value = Number(requestedSpeed);
+      if (Number.isFinite(value)) applySpeed(value, false);
+    }
+    // Query values only: applying on every render would fight the form.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedFn, requestedSpeed]);
+
+  useEffect(() => {
+    if (requestedPlay !== "1" || playedFromQuery.current) return;
+    if (requestedFn && expression !== requestedFn) return;
+    playedFromQuery.current = true;
+    void startSweep();
+  }, [expression, requestedFn, requestedPlay, startSweep]);
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -327,18 +353,22 @@ export function FunctionExplorer() {
           break;
         case "Home":
           event.preventDefault();
+          stopSweep();
           goToIndex(0);
           break;
         case "End":
           event.preventDefault();
+          stopSweep();
           goToIndex(sampleCount - 1);
           break;
         case "n":
           event.preventDefault();
+          stopSweep();
           jumpToCritical("next");
           break;
         case "p":
           event.preventDefault();
+          stopSweep();
           jumpToCritical("previous");
           break;
         case "d":
@@ -371,13 +401,13 @@ export function FunctionExplorer() {
   useEffect(() => {
     return () => {
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
-      if (sweepFrameRef.current !== null) cancelAnimationFrame(sweepFrameRef.current);
     };
   }, []);
 
   useVoiceHandler((command) => {
     switch (command.type) {
       case "setFunction":
+        stopSweep();
         applyDraft(command.expression, xMin, xMax);
         return true;
       case "setXMin":
@@ -398,9 +428,19 @@ export function FunctionExplorer() {
         );
         return true;
       case "jump":
+        stopSweep();
         if (command.target === "start") goToIndex(0);
         else if (command.target === "end") goToIndex(sampleCount - 1);
         else jumpToCritical(command.target);
+        return true;
+      case "autoPlay":
+        if (isSweeping) {
+          stopSweep();
+          announce("Auto play stopped.");
+        } else {
+          announce("Playing the curve from left to right.");
+          void startSweep();
+        }
         return true;
       case "describe":
         describeCursor();
@@ -414,7 +454,7 @@ export function FunctionExplorer() {
         return true;
       case "help":
         announce(
-          "Say set function to x squared, set x min to minus five, set speed to two x, go to the maximum, next critical point, or where am I. Use the left and right arrow keys to move along the curve.",
+          "Say set function to x squared, set x min to minus five, set speed to two x, auto play, go to the maximum, next critical point, or where am I. Use the left and right arrow keys to move along the curve.",
         );
         return true;
       default:

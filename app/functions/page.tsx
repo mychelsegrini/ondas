@@ -1,3 +1,5 @@
+import { Suspense } from "react";
+
 import { FunctionExplorer } from "@/components/FunctionExplorer";
 
 export const metadata = {
@@ -7,5 +9,9 @@ export const metadata = {
 };
 
 export default function FunctionsPage() {
-  return <FunctionExplorer />;
+  return (
+    <Suspense fallback={<p className="px-6 py-10 text-zinc-500">Loading the function explorer…</p>}>
+      <FunctionExplorer />
+    </Suspense>
+  );
 }

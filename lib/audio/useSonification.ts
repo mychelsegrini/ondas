@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { CriticalKind } from "@/lib/math/analyze";
+import type { EarconKind } from "@/lib/audio/mappings";
 
 type ToneModule = typeof import("tone");
 
@@ -27,6 +27,9 @@ interface AudioGraph {
   bell: InstanceType<ToneModule["PolySynth"]>;
   thud: InstanceType<ToneModule["MembraneSynth"]>;
   chord: InstanceType<ToneModule["PolySynth"]>;
+  glitchNoise: InstanceType<ToneModule["NoiseSynth"]>;
+  glitchBuzz: InstanceType<ToneModule["PolySynth"]>;
+  glitchFilter: InstanceType<ToneModule["Filter"]>;
 }
 
 const CONTINUOUS_LEVEL = 0.18;
@@ -80,6 +83,25 @@ export function useSonification() {
         volume: -18,
       }).toDestination();
 
+      // Discontinuity earcon: a band limited noise burst layered with two
+      // square waves a semitone apart. The beating between them is what makes
+      // it read as a harsh glitch rather than as a musical note.
+      const glitchFilter = new Tone.Filter({
+        frequency: 1400,
+        type: "bandpass",
+        Q: 1.8,
+      }).toDestination();
+      const glitchNoise = new Tone.NoiseSynth({
+        noise: { type: "white" },
+        envelope: { attack: 0.001, decay: 0.16, sustain: 0, release: 0.04 },
+        volume: -14,
+      }).connect(glitchFilter);
+      const glitchBuzz = new Tone.PolySynth(Tone.Synth, {
+        oscillator: { type: "square" },
+        envelope: { attack: 0.001, decay: 0.2, sustain: 0, release: 0.04 },
+        volume: -22,
+      }).toDestination();
+
       graphRef.current = {
         Tone,
         sine,
@@ -92,6 +114,9 @@ export function useSonification() {
         bell,
         thud,
         chord,
+        glitchNoise,
+        glitchBuzz,
+        glitchFilter,
       };
       setStatus("ready");
       setError(null);
@@ -131,7 +156,7 @@ export function useSonification() {
     setIsToneOn(false);
   }, []);
 
-  const playEarcon = useCallback((kind: CriticalKind) => {
+  const playEarcon = useCallback((kind: EarconKind) => {
     const graph = graphRef.current;
     if (!graph) return;
     const now = graph.Tone.now();
@@ -141,6 +166,10 @@ export function useSonification() {
     } else if (kind === "min") {
       // Heavy percussive thud at the bottom of the register.
       graph.thud.triggerAttackRelease(55, 0.5, now, 0.9);
+    } else if (kind === "discontinuity") {
+      // Harsh glitch: noise burst plus two clashing squares.
+      graph.glitchNoise.triggerAttackRelease(0.14, now, 1);
+      graph.glitchBuzz.triggerAttackRelease([196, 207.65], 0.18, now, 0.9);
     } else {
       // Soft transitional chord for the change of curvature.
       graph.chord.triggerAttackRelease([523.25, 659.25, 783.99], 0.45, now, 0.5);
@@ -163,6 +192,9 @@ export function useSonification() {
         graph.bell,
         graph.thud,
         graph.chord,
+        graph.glitchNoise,
+        graph.glitchBuzz,
+        graph.glitchFilter,
       ].forEach((node) => {
         try {
           node.dispose();

@@ -20,12 +20,26 @@ export interface CriticalPoint {
   index: number;
 }
 
+/**
+ * `pole` is a vertical asymptote: the function is defined on both sides but the
+ * value explodes, as in 1/x or tan(x). `gap` is a boundary of the domain, where
+ * the function stops being a real number at all, as in sqrt(x) or log(x).
+ */
+export type DiscontinuityKind = "pole" | "gap";
+
+export interface Discontinuity {
+  kind: DiscontinuityKind;
+  x: number;
+  index: number;
+}
+
 export interface FunctionAnalysis {
   expression: string;
   xMin: number;
   xMax: number;
   points: SamplePoint[];
   criticalPoints: CriticalPoint[];
+  discontinuities: Discontinuity[];
   /** Plot window on the y axis, robust against asymptotes. */
   yMin: number;
   yMax: number;
@@ -154,6 +168,7 @@ export function analyzeFunction(
     xMax,
     points: [],
     criticalPoints: [],
+    discontinuities: [],
     yMin: -1,
     yMax: 1,
     error: null,
@@ -202,6 +217,8 @@ export function analyzeFunction(
 
   const isContinuous = (a: SamplePoint, b: SamplePoint) =>
     Number.isFinite(a.y) && Number.isFinite(b.y) && Math.abs(b.y - a.y) < jumpLimit;
+
+  const discontinuities = findDiscontinuities(points, jumpLimit, xMin, xMax);
 
   const criticalPoints: CriticalPoint[] = [];
 
@@ -270,10 +287,75 @@ export function analyzeFunction(
     xMax,
     points,
     criticalPoints: deduped,
+    discontinuities,
     yMin,
     yMax,
     error: null,
   };
+}
+
+/**
+ * Flags every sample boundary where the curve either leaves the reals or jumps
+ * further than a well behaved function could between two adjacent samples.
+ * Near a pole many consecutive boundaries qualify, so the flagged indices are
+ * clustered and only the steepest one in each cluster is kept.
+ */
+function findDiscontinuities(
+  points: SamplePoint[],
+  jumpLimit: number,
+  xMin: number,
+  xMax: number,
+): Discontinuity[] {
+  interface Flag {
+    index: number;
+    kind: DiscontinuityKind;
+    severity: number;
+  }
+
+  const flags: Flag[] = [];
+  for (let i = 1; i < points.length; i += 1) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    const prevDefined = Number.isFinite(prev.y);
+    const currDefined = Number.isFinite(curr.y);
+
+    if (prevDefined !== currDefined) {
+      flags.push({ index: i, kind: "gap", severity: Number.POSITIVE_INFINITY });
+    } else if (prevDefined && currDefined) {
+      const jump = Math.abs(curr.y - prev.y);
+      if (jump > jumpLimit) flags.push({ index: i, kind: "pole", severity: jump });
+    }
+  }
+  if (flags.length === 0) return [];
+
+  // Samples within this distance of each other belong to the same feature.
+  const clusterGap = Math.max(2, Math.round(points.length / 120));
+  const result: Discontinuity[] = [];
+  let cluster: Flag[] = [flags[0]];
+
+  const commit = (group: Flag[]) => {
+    // A gap always wins: reaching the edge of the domain is the stronger claim.
+    const gap = group.find((flag) => flag.kind === "gap");
+    const best = gap ?? group.reduce((a, b) => (b.severity > a.severity ? b : a));
+    const step = (xMax - xMin) / (points.length - 1);
+    result.push({
+      kind: best.kind,
+      // The true singularity sits between the two samples that straddle it.
+      x: xMin + (best.index - 0.5) * step,
+      index: best.index,
+    });
+  };
+
+  for (let i = 1; i < flags.length; i += 1) {
+    if (flags[i].index - cluster[cluster.length - 1].index <= clusterGap) {
+      cluster.push(flags[i]);
+    } else {
+      commit(cluster);
+      cluster = [flags[i]];
+    }
+  }
+  commit(cluster);
+  return result;
 }
 
 export function formatNumber(value: number, digits = 2): string {
@@ -287,6 +369,12 @@ export function describeCriticalPoint(point: CriticalPoint): string {
   const label =
     point.kind === "max" ? "Local maximum" : point.kind === "min" ? "Local minimum" : "Inflection point";
   return `${label} at x ${formatNumber(point.x)}, y ${formatNumber(point.y)}`;
+}
+
+export function describeDiscontinuity(point: Discontinuity): string {
+  return point.kind === "pole"
+    ? `Vertical asymptote at x ${formatNumber(point.x)}`
+    : `Edge of the domain at x ${formatNumber(point.x)}, the function is undefined beyond this point`;
 }
 
 export function describeSlope(dy: number): string {

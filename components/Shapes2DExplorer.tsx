@@ -4,77 +4,55 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { RandomPointVisual } from "@/components/RandomPointVisual";
-import { ShapeVisual } from "@/components/ShapeVisual";
+import { Shape2DVisual } from "@/components/Shape2DVisual";
 import { useVoiceCommands, useVoiceHandler } from "@/components/VoiceCommandProvider";
-import { useShapeSonification } from "@/lib/audio/useShapeSonification";
-import {
-  SHAPES,
-  describeDirection,
-  getShape,
-  randomSpatialPoint,
-  type Shape3D,
-  type Vec3,
-} from "@/lib/shapes";
+import { usePolygonSonification } from "@/lib/audio/usePolygonSonification";
+import { SHAPES_2D, getShape2D, type Shape2D } from "@/lib/shapes2d";
 
-const PREVIEW_SAMPLES = 420;
+const PREVIEW_SAMPLES = 360;
 
-export function ShapesExplorer() {
+export function Shapes2DExplorer() {
   const searchParams = useSearchParams();
   const { announce } = useVoiceCommands();
-  const { scan, pingAt, stop, activeShapeId, frame, error } = useShapeSonification();
-  const [selectedId, setSelectedId] = useState<string>(SHAPES[0].id);
-  const [randomPoint, setRandomPoint] = useState<Vec3 | null>(null);
+  const { scan, stop, activeShapeId, frame, error } = usePolygonSonification();
+  const [selectedId, setSelectedId] = useState<string>(SHAPES_2D[0].id);
+  const [loop, setLoop] = useState(false);
   const buttonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
   const previews = useMemo(
-    () =>
-      new Map(
-        SHAPES.filter((shape) => shape.kind === "scan").map((shape) => [
-          shape.id,
-          shape.buildPath(PREVIEW_SAMPLES),
-        ]),
-      ),
+    () => new Map(SHAPES_2D.map((shape) => [shape.id, shape.buildPath(PREVIEW_SAMPLES)])),
     [],
   );
 
-  const selected = getShape(selectedId) ?? SHAPES[0];
+  const selected = getShape2D(selectedId) ?? SHAPES_2D[0];
+  const loopRef = useRef(loop);
+  loopRef.current = loop;
 
   const startScan = useCallback(
-    (shape: Shape3D) => {
+    (shape: Shape2D) => {
       setSelectedId(shape.id);
-      if (shape.kind === "randomPoint") {
-        // A fresh coordinate on every activation: the exercise is to locate a
-        // direction you have not heard before.
-        const point = randomSpatialPoint();
-        setRandomPoint(point);
-        void pingAt(point);
-        announce(`Random point. ${describeDirection(point)}.`);
-        return;
-      }
-      announce(`Scanning the ${shape.name}. ${shape.listenFor}`);
-      void scan(shape);
+      announce(`Tracing the ${shape.name}. ${shape.listenFor}`);
+      void scan(shape, loopRef.current);
     },
-    [announce, pingAt, scan],
+    [announce, scan],
   );
 
-  // Deep link and voice navigation land here: /3d-shapes?shape=cylinder
+  // Deep link and voice navigation land here: /2d-shapes?shape=hexagon
   const requestedShape = searchParams.get("shape");
   useEffect(() => {
     if (!requestedShape) return;
-    const shape = getShape(requestedShape);
+    const shape = getShape2D(requestedShape);
     if (!shape) return;
     setSelectedId(shape.id);
     buttonRefs.current[shape.id]?.focus();
     startScan(shape);
-    // Intentionally keyed on the query value only: re-running on every render
-    // would restart the scan continuously.
+    // Keyed on the query value only, so the scan is not restarted every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestedShape]);
 
   useVoiceHandler((command) => {
     if (command.type === "selectShape") {
-      const shape = getShape(command.shapeId);
+      const shape = getShape2D(command.shapeId);
       if (!shape) return false;
       buttonRefs.current[shape.id]?.focus();
       startScan(shape);
@@ -82,7 +60,7 @@ export function ShapesExplorer() {
     }
     if (command.type === "audio" && command.action === "stop") {
       stop();
-      announce("Scan stopped.");
+      announce("Trace stopped.");
       return true;
     }
     if (command.type === "describe") {
@@ -91,14 +69,13 @@ export function ShapesExplorer() {
     }
     if (command.type === "help") {
       announce(
-        "Say select the sphere, scan the cylinder, or play the triangular prism. Say random point for a single localised ping, stop to end the scan, or where am I to hear the current shape.",
+        "Say trace the square, select the hexagon, or play the circle. Say stop to end the trace, or where am I to hear the current shape.",
       );
       return true;
     }
     return false;
   });
 
-  // Digits pick a shape without a mouse: 1 to 9, then 0 for the tenth.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -107,12 +84,11 @@ export function ShapesExplorer() {
 
       if (event.key === "Escape") {
         stop();
-        announce("Scan stopped.");
+        announce("Trace stopped.");
         return;
       }
-      if (!/^[0-9]$/.test(event.key)) return;
-      const index = event.key === "0" ? 9 : Number(event.key) - 1;
-      const shape = SHAPES[index];
+      if (!/^[1-9]$/.test(event.key)) return;
+      const shape = SHAPES_2D[Number(event.key) - 1];
       if (!shape) return;
       event.preventDefault();
       buttonRefs.current[shape.id]?.focus();
@@ -127,22 +103,25 @@ export function ShapesExplorer() {
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
       <header className="max-w-3xl">
-        <h1 className="text-4xl font-semibold tracking-tight text-zinc-50">Spatial Waves</h1>
+        <h1 className="text-4xl font-semibold tracking-tight text-zinc-50">Flat Waves</h1>
         <p className="mt-3 text-zinc-400">
-          Solids with an automatic spatial scan. A tone travels along the surface while a 3D panner
-          places it around your head: height becomes pitch, depth becomes distance, and every sharp
-          turn is an edge. Start with the random point to calibrate your ears, then move on to the
-          solids. Headphones strongly recommended.
+          Six plane figures, each traced around its perimeter by a moving tone. Horizontal position
+          becomes stereo balance, height becomes pitch and brightness, and every corner fires a
+          short metallic click. Count the clicks and you have counted the sides.
         </p>
         <p className="mt-3 text-sm text-zinc-500">
-          Press a number key from <kbd className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs">1</kbd> to{" "}
-          <kbd className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs">{SHAPES.length}</kbd> to scan a
-          shape, or <kbd className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs">Esc</kbd> to stop.
+          Press a number key from <kbd className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs">1</kbd>{" "}
+          to <kbd className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs">{SHAPES_2D.length}</kbd> to
+          trace a shape, or <kbd className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs">Esc</kbd> to
+          stop.
         </p>
       </header>
 
       {error ? (
-        <p role="alert" className="mt-6 rounded-lg border border-rose-900 bg-rose-950/40 p-4 text-rose-300">
+        <p
+          role="alert"
+          className="mt-6 rounded-lg border border-rose-900 bg-rose-950/40 p-4 text-rose-300"
+        >
           {error}
         </p>
       ) : null}
@@ -150,10 +129,10 @@ export function ShapesExplorer() {
       <div className="mt-10 grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <section aria-labelledby="library-heading">
           <h2 id="library-heading" className="sr-only">
-            Shape library
+            Polygon library
           </h2>
           <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {SHAPES.map((shape, index) => {
+            {SHAPES_2D.map((shape, index) => {
               const isActive = activeShapeId === shape.id;
               const isSelected = selectedId === shape.id;
               return (
@@ -169,29 +148,25 @@ export function ShapesExplorer() {
                       isActive
                         ? "border-fuchsia-500 bg-fuchsia-500/5"
                         : isSelected
-                          ? "border-cyan-500/60 bg-zinc-900/60"
+                          ? "border-emerald-500/60 bg-zinc-900/60"
                           : "border-zinc-800 bg-zinc-900/30 hover:border-zinc-600 hover:bg-zinc-900/60"
                     }`}
                   >
                     <span className="flex items-start justify-between gap-2">
                       <span className="text-base font-semibold text-zinc-100">{shape.name}</span>
                       <kbd className="rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-[10px] text-zinc-500">
-                        {index === 9 ? 0 : index + 1}
+                        {index + 1}
                       </kbd>
                     </span>
-                    {shape.kind === "randomPoint" ? (
-                      <RandomPointVisual
-                        point={randomPoint}
-                        className="h-36 w-full text-zinc-600"
-                      />
-                    ) : (
-                      <ShapeVisual
-                        path={previews.get(shape.id)!}
-                        progress={isActive ? progress : null}
-                        className={`h-36 w-full ${isActive ? "text-fuchsia-300" : "text-cyan-400"}`}
-                      />
-                    )}
-                    <span id={`${shape.id}-tagline`} className="mt-auto text-xs leading-relaxed text-zinc-500">
+                    <Shape2DVisual
+                      path={previews.get(shape.id)!}
+                      progress={isActive ? progress : null}
+                      className={`h-36 w-full ${isActive ? "text-fuchsia-300" : "text-emerald-400"}`}
+                    />
+                    <span
+                      id={`${shape.id}-tagline`}
+                      className="mt-auto text-xs leading-relaxed text-zinc-500"
+                    >
                       {shape.tagline}
                     </span>
                     {isActive ? (
@@ -214,8 +189,11 @@ export function ShapesExplorer() {
 
         <aside aria-labelledby="detail-heading" className="lg:sticky lg:top-24 lg:self-start">
           <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-6">
-            <h2 id="detail-heading" className="text-xs font-semibold uppercase tracking-widest text-zinc-500">
-              Now exploring
+            <h2
+              id="detail-heading"
+              className="text-xs font-semibold uppercase tracking-widest text-zinc-500"
+            >
+              Now tracing
             </h2>
             <AnimatePresence mode="wait">
               <motion.div
@@ -225,12 +203,14 @@ export function ShapesExplorer() {
                 exit={{ opacity: 0, y: -8 }}
                 transition={{ duration: 0.18 }}
               >
-                <p className="mt-2 text-2xl font-semibold text-cyan-300">{selected.name}</p>
+                <p className="mt-2 text-2xl font-semibold text-emerald-300">{selected.name}</p>
                 <p className="mt-3 text-sm leading-relaxed text-zinc-400">{selected.description}</p>
                 <h3 className="mt-5 text-xs font-semibold uppercase tracking-widest text-zinc-500">
                   Listen for
                 </h3>
-                <p className="mt-2 text-sm leading-relaxed text-emerald-300/90">{selected.listenFor}</p>
+                <p className="mt-2 text-sm leading-relaxed text-cyan-300/90">
+                  {selected.listenFor}
+                </p>
               </motion.div>
             </AnimatePresence>
 
@@ -238,19 +218,15 @@ export function ShapesExplorer() {
               <button
                 type="button"
                 onClick={() => startScan(selected)}
-                className="flex-1 rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-zinc-950 transition-colors hover:bg-cyan-300"
+                className="flex-1 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-semibold text-zinc-950 transition-colors hover:bg-emerald-300"
               >
-                {selected.kind === "randomPoint"
-                  ? "Play a new random point"
-                  : activeShapeId === selected.id
-                    ? "Restart scan"
-                    : "Play scan"}
+                {activeShapeId === selected.id ? "Restart trace" : "Play trace"}
               </button>
               <button
                 type="button"
                 onClick={() => {
                   stop();
-                  announce("Scan stopped.");
+                  announce("Trace stopped.");
                 }}
                 disabled={!activeShapeId}
                 className="rounded-lg border border-zinc-700 px-4 py-2 text-sm font-semibold text-zinc-200 transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
@@ -259,17 +235,34 @@ export function ShapesExplorer() {
               </button>
             </div>
 
-            {selected.kind === "randomPoint" ? (
-              <p className="mt-4 text-xs text-zinc-600">
-                {randomPoint
-                  ? `Last ping: ${describeDirection(randomPoint).toLowerCase()}.`
-                  : "No point has been played yet."}
-              </p>
-            ) : (
-              <p className="mt-4 text-xs text-zinc-600">
-                The scan lasts about {selected.scanSeconds} seconds.
-              </p>
-            )}
+            <label className="mt-4 flex items-center gap-2 text-sm text-zinc-400">
+              <input
+                type="checkbox"
+                checked={loop}
+                onChange={(event) => setLoop(event.target.checked)}
+                className="h-4 w-4 rounded border-zinc-700 bg-zinc-950 accent-emerald-400"
+              />
+              Loop the trace until stopped
+            </label>
+
+            <dl className="mt-5 space-y-1 border-t border-zinc-800 pt-4 text-xs text-zinc-500">
+              <div className="flex justify-between gap-4">
+                <dt>Corners</dt>
+                <dd className="font-mono text-zinc-300">
+                  {selected.corners === 0 ? "none" : selected.corners}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-4">
+                <dt>Lap duration</dt>
+                <dd className="font-mono text-zinc-300">{selected.scanSeconds}s</dd>
+              </div>
+              <div className="flex justify-between gap-4">
+                <dt>Corners heard</dt>
+                <dd className="font-mono text-zinc-300">
+                  {activeShapeId === selected.id ? (frame?.cornersPassed ?? 0) : "—"}
+                </dd>
+              </div>
+            </dl>
           </div>
         </aside>
       </div>

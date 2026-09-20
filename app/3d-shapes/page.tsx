@@ -4,7 +4,7 @@ import { ShapesExplorer } from "@/components/ShapesExplorer";
 
 export const metadata = {
   title: "Spatial Waves — 3D shape library | Ondas",
-  description: "Ten mathematical solids explored through an automatic spatial audio scan.",
+  description: "Mathematical solids explored through an automatic spatial audio scan.",
 };
 
 export default function ShapesPage() {

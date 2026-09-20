@@ -12,10 +12,23 @@ import {
   type ReactNode,
 } from "react";
 
-import { parseVoiceCommand, VOICE_EXAMPLES, type VoiceCommand } from "@/lib/voice/parseCommand";
+import { SHAPES_2D } from "@/lib/shapes2d";
+import {
+  parseVoiceCommand,
+  VOICE_EXAMPLES,
+  type VoiceCommand,
+  type VoicePage,
+} from "@/lib/voice/parseCommand";
 
 /** Returning true means "handled, stop propagating to other handlers". */
 export type VoiceHandler = (command: VoiceCommand) => boolean;
+
+const PAGE_LABELS: Record<VoicePage, string> = {
+  home: "home page",
+  functions: "functions explorer",
+  "2d-shapes": "2D shapes library",
+  "3d-shapes": "3D shapes library",
+};
 
 interface VoiceContextValue {
   isSupported: boolean;
@@ -70,16 +83,23 @@ export function VoiceCommandProvider({ children }: { children: ReactNode }) {
 
       // Fallbacks that work from anywhere in the app.
       if (command.type === "navigate") {
-        const path = command.page === "home" ? "/" : `/${command.page}`;
-        router.push(path);
-        announce(`Opening the ${command.page === "home" ? "home page" : `${command.page} page`}.`);
+        router.push(command.page === "home" ? "/" : `/${command.page}`);
+        announce(`Opening the ${PAGE_LABELS[command.page]}.`);
         return;
       }
       if (command.type === "selectShape") {
-        router.push(`/shapes?shape=${command.shapeId}`);
+        // The shape's own library page owns the command, so route by dimension.
+        const is2D = SHAPES_2D.some((shape) => shape.id === command.shapeId);
+        router.push(`/${is2D ? "2d-shapes" : "3d-shapes"}?shape=${command.shapeId}`);
         return;
       }
-      if (command.type === "setFunction" || command.type === "setXMin" || command.type === "setXMax") {
+      if (
+        command.type === "setFunction" ||
+        command.type === "setXMin" ||
+        command.type === "setXMax" ||
+        command.type === "setDomain" ||
+        command.type === "setSpeed"
+      ) {
         router.push("/functions");
         announce("Opening the functions explorer. Please repeat the command.");
         return;

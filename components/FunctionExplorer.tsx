@@ -2,18 +2,21 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { CRITICAL_COLORS, FunctionGraph } from "@/components/FunctionGraph";
+import { CRITICAL_COLORS, DISCONTINUITY_COLOR, FunctionGraph } from "@/components/FunctionGraph";
 import { useVoiceCommands, useVoiceHandler } from "@/components/VoiceCommandProvider";
-import { slopeToTimbre, xToPan, yToFrequency } from "@/lib/audio/mappings";
+import { slopeToTimbre, xToPan, yToFrequency, type EarconKind } from "@/lib/audio/mappings";
 import { useSonification } from "@/lib/audio/useSonification";
 import {
   analyzeFunction,
   describeCriticalPoint,
+  describeDiscontinuity,
   describeSlope,
   formatNumber,
   type CriticalKind,
   type CriticalPoint,
+  type Discontinuity,
 } from "@/lib/math/analyze";
+import { clampSpeed, MAX_SPEED, MIN_SPEED } from "@/lib/voice/parseCommand";
 
 const PRESETS = [
   { label: "x^2", expression: "x^2", xMin: -5, xMax: 5 },
@@ -21,7 +24,8 @@ const PRESETS = [
   { label: "sin(x) * x", expression: "sin(x) * x", xMin: -10, xMax: 10 },
   { label: "x^3 - 3x", expression: "x^3 - 3*x", xMin: -3, xMax: 3 },
   { label: "e^(-x^2)", expression: "exp(-x^2)", xMin: -3, xMax: 3 },
-  { label: "x^4 - 4x^2", expression: "x^4 - 4*x^2", xMin: -2.5, xMax: 2.5 },
+  { label: "1/x", expression: "1/x", xMin: -5, xMax: 5 },
+  { label: "tan(x)", expression: "tan(x)", xMin: -4.5, xMax: 4.5 },
 ];
 
 const KIND_LABEL: Record<CriticalKind, string> = {
@@ -30,16 +34,24 @@ const KIND_LABEL: Record<CriticalKind, string> = {
   inflection: "Inflection point",
 };
 
-const KIND_EARCON: Record<CriticalKind, string> = {
+const KIND_EARCON: Record<EarconKind, string> = {
   max: "crystalline bell",
   min: "deep thud",
   inflection: "soft chord",
+  discontinuity: "harsh glitch",
 };
 
 const SWEEP_SECONDS = 9;
 const IDLE_FADE_MS = 1400;
 /** How close, in samples, the cursor must be for a critical point to fire. */
 const EARCON_TOLERANCE = 3;
+/**
+ * Samples travelled per arrow press at 1.0x. One sample per press meant 720
+ * presses to cross the domain, which was unusable; six gives a brisk 120.
+ */
+const BASE_STEP = 6;
+/** Multiplier applied when Shift is held, on top of the speed setting. */
+const COARSE_FACTOR = 5;
 
 export function FunctionExplorer() {
   const { announce } = useVoiceCommands();
@@ -55,6 +67,8 @@ export function FunctionExplorer() {
   const [cursorIndex, setCursorIndex] = useState(0);
   const [isSweeping, setIsSweeping] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [currentSonificationSpeed, setCurrentSonificationSpeed] = useState(1);
+  const [speedDraft, setSpeedDraft] = useState("1");
 
   const graphRef = useRef<HTMLDivElement | null>(null);
   const previousIndexRef = useRef(0);
@@ -71,6 +85,33 @@ export function FunctionExplorer() {
     for (const point of analysis.criticalPoints) counts[point.kind].push(point);
     return counts;
   }, [analysis]);
+
+  /** Everything that makes a sound when the cursor crosses it, in x order. */
+  const markers = useMemo(
+    () =>
+      [
+        ...analysis.criticalPoints.map((point) => ({
+          index: point.index,
+          x: point.x,
+          kind: point.kind as EarconKind,
+          label: KIND_LABEL[point.kind],
+          detail: `y ${formatNumber(point.y)} · ${KIND_EARCON[point.kind]}`,
+          spoken: describeCriticalPoint(point),
+        })),
+        ...analysis.discontinuities.map((point) => ({
+          index: point.index,
+          x: point.x,
+          kind: "discontinuity" as EarconKind,
+          label: point.kind === "pole" ? "Vertical asymptote" : "Domain edge",
+          detail: KIND_EARCON.discontinuity,
+          spoken: describeDiscontinuity(point),
+        })),
+      ].sort((a, b) => a.x - b.x),
+    [analysis],
+  );
+
+  /** Samples moved per key press, from the user's speed multiplier. */
+  const stepSize = Math.max(1, Math.round(BASE_STEP * currentSonificationSpeed));
 
   useEffect(() => {
     setCursorIndex(0);
@@ -100,10 +141,12 @@ export function FunctionExplorer() {
     const previous = previousIndexRef.current;
     previousIndexRef.current = cursorIndex;
 
+    // At higher speeds a single press can skip over a feature entirely, so the
+    // whole travelled span is checked rather than just the landing sample.
     const low = Math.min(previous, cursorIndex) - EARCON_TOLERANCE;
     const high = Math.max(previous, cursorIndex) + EARCON_TOLERANCE;
-    const crossed = analysis.criticalPoints
-      .filter((point) => point.index >= low && point.index <= high)
+    const crossed = markers
+      .filter((marker) => marker.index >= low && marker.index <= high)
       .sort((a, b) => Math.abs(a.index - cursorIndex) - Math.abs(b.index - cursorIndex))[0];
 
     if (!crossed) {
@@ -114,8 +157,8 @@ export function FunctionExplorer() {
     if (lastEarconRef.current === crossed.index) return;
     lastEarconRef.current = crossed.index;
     playEarcon(crossed.kind);
-    announce(describeCriticalPoint(crossed));
-  }, [analysis, announce, current, cursorIndex, isReady, playEarcon, update]);
+    announce(crossed.spoken);
+  }, [analysis, announce, current, cursorIndex, isReady, markers, playEarcon, update]);
 
   const moveCursor = useCallback(
     (delta: number) => {
@@ -135,6 +178,16 @@ export function FunctionExplorer() {
     [markActivity, sampleCount],
   );
 
+  const applySpeed = useCallback(
+    (value: number, announceChange = true) => {
+      const next = clampSpeed(value);
+      setCurrentSonificationSpeed(next);
+      setSpeedDraft(String(next));
+      if (announceChange) announce(`Cursor speed ${next} times.`);
+    },
+    [announce],
+  );
+
   const stopSweep = useCallback(() => {
     if (sweepFrameRef.current !== null) {
       cancelAnimationFrame(sweepFrameRef.current);
@@ -152,8 +205,10 @@ export function FunctionExplorer() {
     setIsSweeping(true);
     playTone();
     const startedAt = performance.now();
+    // The sweep obeys the same speed setting as manual movement.
+    const durationMs = (SWEEP_SECONDS * 1000) / currentSonificationSpeed;
     const tick = (now: number) => {
-      const progress = Math.min(1, (now - startedAt) / (SWEEP_SECONDS * 1000));
+      const progress = Math.min(1, (now - startedAt) / durationMs);
       setCursorIndex(Math.round(progress * (sampleCount - 1)));
       if (progress >= 1) {
         sweepFrameRef.current = null;
@@ -164,7 +219,7 @@ export function FunctionExplorer() {
       sweepFrameRef.current = requestAnimationFrame(tick);
     };
     sweepFrameRef.current = requestAnimationFrame(tick);
-  }, [isReady, markActivity, playTone, sampleCount, start, stopSweep]);
+  }, [currentSonificationSpeed, isReady, markActivity, playTone, sampleCount, start, stopSweep]);
 
   const jumpToCritical = useCallback(
     (target: "max" | "min" | "inflection" | "next" | "previous") => {
@@ -258,7 +313,7 @@ export function FunctionExplorer() {
         target && (target.tagName === "BUTTON" || target.tagName === "A" || target.tagName === "SELECT");
       if (event.key === " " && isControl) return;
 
-      const coarse = event.shiftKey ? 20 : 1;
+      const coarse = stepSize * (event.shiftKey ? COARSE_FACTOR : 1);
       switch (event.key) {
         case "ArrowRight":
           event.preventDefault();
@@ -309,6 +364,7 @@ export function FunctionExplorer() {
     moveCursor,
     sampleCount,
     startSweep,
+    stepSize,
     stopSweep,
   ]);
 
@@ -333,8 +389,13 @@ export function FunctionExplorer() {
       case "setDomain":
         applyDraft(expression, command.min, command.max);
         return true;
+      case "setSpeed":
+        applySpeed(command.value);
+        return true;
       case "moveCursor":
-        moveCursor((command.direction === "right" ? 1 : -1) * (command.fast ? 60 : 12));
+        moveCursor(
+          (command.direction === "right" ? 1 : -1) * stepSize * (command.fast ? COARSE_FACTOR * 2 : 2),
+        );
         return true;
       case "jump":
         if (command.target === "start") goToIndex(0);
@@ -353,7 +414,7 @@ export function FunctionExplorer() {
         return true;
       case "help":
         announce(
-          "Say set function to x squared, set x min to minus five, go to the maximum, next critical point, or where am I. Use the left and right arrow keys to move along the curve.",
+          "Say set function to x squared, set x min to minus five, set speed to two x, go to the maximum, next critical point, or where am I. Use the left and right arrow keys to move along the curve.",
         );
         return true;
       default:
@@ -372,8 +433,8 @@ export function FunctionExplorer() {
         <p className="mt-3 text-zinc-400">
           Type or dictate any function of x, choose the domain, then walk the curve with the arrow
           keys. Height becomes pitch, horizontal position becomes stereo placement, and the slope
-          reshapes the timbre. Maxima, minima and inflection points announce themselves with their
-          own earcons.
+          reshapes the timbre. Maxima, minima, inflection points and discontinuities each announce
+          themselves with their own earcon.
         </p>
       </header>
 
@@ -411,6 +472,62 @@ export function FunctionExplorer() {
                 Space
               </kbd>
             </button>
+          </section>
+
+          <section
+            aria-labelledby="speed-heading"
+            className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5"
+          >
+            <div className="flex items-baseline justify-between gap-3">
+              <h2
+                id="speed-heading"
+                className="text-xs font-semibold uppercase tracking-widest text-zinc-500"
+              >
+                Cursor speed
+              </h2>
+              <span aria-hidden="true" className="font-mono text-sm text-fuchsia-300">
+                {currentSonificationSpeed.toFixed(1)}×
+              </span>
+            </div>
+            <div className="mt-3 flex items-center gap-3">
+              <input
+                id="speed-slider"
+                type="range"
+                min={MIN_SPEED}
+                max={MAX_SPEED}
+                step={0.1}
+                value={currentSonificationSpeed}
+                onChange={(event) => applySpeed(Number(event.target.value), false)}
+                aria-label="Sonification cursor speed multiplier"
+                // The native range already exposes min, max and value; only the
+                // spoken form of the value needs to be supplied.
+                aria-valuetext={`${currentSonificationSpeed.toFixed(1)} times normal speed`}
+                aria-describedby="speed-hint"
+                className="h-2 flex-1 cursor-pointer appearance-none rounded-full bg-zinc-800 accent-fuchsia-400"
+              />
+              <input
+                id="speed-value"
+                type="number"
+                min={MIN_SPEED}
+                max={MAX_SPEED}
+                step={0.1}
+                value={speedDraft}
+                onChange={(event) => {
+                  setSpeedDraft(event.target.value);
+                  const parsed = Number(event.target.value);
+                  if (event.target.value !== "" && Number.isFinite(parsed)) {
+                    setCurrentSonificationSpeed(clampSpeed(parsed));
+                  }
+                }}
+                onBlur={() => applySpeed(Number(speedDraft) || 1, false)}
+                aria-label="Sonification cursor speed multiplier, numeric entry between 0.2 and 5"
+                className="w-20 rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-right font-mono text-sm text-zinc-200 focus:border-fuchsia-400"
+              />
+            </div>
+            <p id="speed-hint" className="mt-2 text-xs text-zinc-500">
+              From 0.2× for careful inspection up to 5× for a fast overview. Affects the arrow keys
+              and the automatic sweep. Say “set speed to two x” to change it by voice.
+            </p>
           </section>
 
           <section aria-labelledby="function-heading" className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
@@ -506,8 +623,8 @@ export function FunctionExplorer() {
             </h2>
             <dl className="mt-3 space-y-2 text-sm">
               {[
-                ["← →", "Move the cursor one sample"],
-                ["Shift + ← →", "Move twenty samples"],
+                ["← →", "Move the cursor at the current speed"],
+                ["Shift + ← →", "Move five times further"],
                 ["Home / End", "Jump to the start or end of the domain"],
                 ["N / P", "Next or previous critical point"],
                 ["D", "Describe the current position"],
@@ -561,33 +678,43 @@ export function FunctionExplorer() {
             className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5"
           >
             <h2 id="critical-heading" className="text-xs font-semibold uppercase tracking-widest text-zinc-500">
-              Critical points ({analysis.criticalPoints.length})
+              Features ({markers.length})
+              {analysis.discontinuities.length > 0 ? (
+                <span className="ml-2 font-normal normal-case tracking-normal text-rose-400">
+                  including {analysis.discontinuities.length} discontinuit
+                  {analysis.discontinuities.length === 1 ? "y" : "ies"}
+                </span>
+              ) : null}
             </h2>
-            {analysis.criticalPoints.length === 0 ? (
+            {markers.length === 0 ? (
               <p className="mt-3 text-sm text-zinc-500">
-                No maxima, minima or inflection points were found on this domain.
+                No maxima, minima, inflection points or discontinuities were found on this domain.
               </p>
             ) : (
               <ul className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                {analysis.criticalPoints.map((point) => (
-                  <li key={`${point.kind}-${point.x.toFixed(4)}`}>
+                {markers.map((marker) => (
+                  <li key={`${marker.kind}-${marker.x.toFixed(4)}`}>
                     <button
                       type="button"
-                      onClick={() => goToIndex(point.index)}
+                      onClick={() => goToIndex(marker.index)}
                       className="flex w-full items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-left transition-colors hover:border-zinc-600 hover:bg-zinc-900"
                     >
                       <span
                         aria-hidden="true"
                         className="h-2.5 w-2.5 shrink-0 rounded-full"
-                        style={{ backgroundColor: CRITICAL_COLORS[point.kind] }}
+                        style={{
+                          backgroundColor:
+                            marker.kind === "discontinuity"
+                              ? DISCONTINUITY_COLOR
+                              : CRITICAL_COLORS[marker.kind as CriticalKind],
+                        }}
                       />
                       <span className="min-w-0">
                         <span className="block truncate text-sm font-medium text-zinc-200">
-                          {KIND_LABEL[point.kind]}
+                          {marker.label}
                         </span>
-                        <span className="block font-mono text-xs text-zinc-500">
-                          x {formatNumber(point.x)} · y {formatNumber(point.y)} ·{" "}
-                          {KIND_EARCON[point.kind]}
+                        <span className="block truncate font-mono text-xs text-zinc-500">
+                          x {formatNumber(marker.x)} · {marker.detail}
                         </span>
                       </span>
                     </button>

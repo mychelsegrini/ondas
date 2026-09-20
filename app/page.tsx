@@ -18,7 +18,7 @@ const FEATURES = [
   },
   {
     title: "Critical points become earcons",
-    body: "A crystalline bell marks a local maximum, a deep thud marks a local minimum, and a soft chord marks an inflection point.",
+    body: "A crystalline bell marks a local maximum, a deep thud marks a local minimum, a soft chord marks an inflection point, and a harsh glitch marks a discontinuity.",
     accent: "text-amber-300",
   },
 ];
@@ -47,7 +47,13 @@ export default function HomePage() {
             Explore 2D functions
           </Link>
           <Link
-            href="/shapes"
+            href="/2d-shapes"
+            className="rounded-lg border border-zinc-700 bg-zinc-900 px-6 py-3 font-semibold text-zinc-100 transition-colors hover:bg-zinc-800"
+          >
+            Trace 2D shapes
+          </Link>
+          <Link
+            href="/3d-shapes"
             className="rounded-lg border border-zinc-700 bg-zinc-900 px-6 py-3 font-semibold text-zinc-100 transition-colors hover:bg-zinc-800"
           >
             Browse the 3D library

@@ -12,8 +12,11 @@ const CASES: Array<[string, number, number]> = [
   ["exp(-x^2)", -3, 3],
   ["x^4 - 4*x^2", -2.5, 2.5],
   ["1/x", -5, 5],
-  ["tan(x)", -3, 3],
+  ["tan(x)", -4.5, 4.5],
   ["abs(x)", -3, 3],
+  ["sqrt(x)", -3, 3],
+  ["log(x)", -2, 5],
+  ["1/(x^2 - 4)", -5, 5],
 ];
 
 for (const [expression, xMin, xMax] of CASES) {
@@ -21,8 +24,11 @@ for (const [expression, xMin, xMax] of CASES) {
   const summary = analysis.criticalPoints
     .map((p) => `${p.kind}@${formatNumber(p.x, 3)}`)
     .join(", ");
+  const breaks = analysis.discontinuities
+    .map((d) => `${d.kind}@${formatNumber(d.x, 3)}`)
+    .join(", ");
   console.log(
-    `${expression.padEnd(12)} [${xMin}, ${xMax}]  y:[${formatNumber(analysis.yMin)}, ${formatNumber(analysis.yMax)}]  ${analysis.error ?? (summary || "none")}`,
+    `${expression.padEnd(12)} [${xMin}, ${xMax}]  y:[${formatNumber(analysis.yMin)}, ${formatNumber(analysis.yMax)}]  ${analysis.error ?? (summary || "none")}  breaks: ${breaks || "none"}`,
   );
 }
 
@@ -37,10 +43,20 @@ for (const phrase of [
   "set x min to minus five",
   "set x max to twelve",
   "set the domain from minus three to three",
+  "set speed to two x",
+  "set speed to zero point five",
+  "speed 3",
+  "set speed to ten x",
   "go to the maximum",
   "next critical point",
   "select the sphere",
-  "open the shapes library",
+  "select the triangular prism",
+  "select the triangle",
+  "select the random point",
+  "select the hexagon",
+  "open the 2d shapes library",
+  "open the 3d shapes library",
+  "open the functions explorer",
   "where am i",
   "stop",
   "banana",

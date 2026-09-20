@@ -13,6 +13,7 @@ const COLORS = {
   max: "#d946ef",
   min: "#34d399",
   inflection: "#fcd34d",
+  discontinuity: "#fb7185",
 } as const;
 
 export const CRITICAL_COLORS: Record<CriticalKind, string> = {
@@ -20,6 +21,8 @@ export const CRITICAL_COLORS: Record<CriticalKind, string> = {
   min: COLORS.min,
   inflection: COLORS.inflection,
 };
+
+export const DISCONTINUITY_COLOR = COLORS.discontinuity;
 
 const PADDING = { top: 24, right: 24, bottom: 34, left: 52 };
 
@@ -70,7 +73,7 @@ export function FunctionGraph({
       const plotHeight = height - PADDING.top - PADDING.bottom;
       if (plotWidth <= 0 || plotHeight <= 0) return;
 
-      const { xMin, xMax, yMin, yMax, points, criticalPoints } = analysis;
+      const { xMin, xMax, yMin, yMax, points, criticalPoints, discontinuities } = analysis;
       const toPixelX = (x: number) => PADDING.left + ((x - xMin) / (xMax - xMin)) * plotWidth;
       const toPixelY = (y: number) =>
         PADDING.top + plotHeight - ((y - yMin) / (yMax - yMin)) * plotHeight;
@@ -154,6 +157,21 @@ export function FunctionGraph({
         }
       }
       ctx.stroke();
+
+      // Discontinuities: dashed verticals where the curve breaks.
+      ctx.strokeStyle = COLORS.discontinuity;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([3, 5]);
+      ctx.globalAlpha = 0.75;
+      for (const gap of discontinuities) {
+        const px = toPixelX(gap.x);
+        ctx.beginPath();
+        ctx.moveTo(px, PADDING.top);
+        ctx.lineTo(px, PADDING.top + plotHeight);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
 
       // Critical points.
       for (const critical of criticalPoints) {

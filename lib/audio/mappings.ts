@@ -4,8 +4,13 @@
  * "speak the same language" to the listener.
  */
 
+import type { CriticalKind } from "@/lib/math/analyze";
+
 export const MIN_FREQUENCY = 150;
 export const MAX_FREQUENCY = 800;
+
+/** Every distinct sound marker the app can fire. */
+export type EarconKind = CriticalKind | "discontinuity";
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));

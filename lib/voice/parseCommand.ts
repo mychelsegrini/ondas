@@ -1,13 +1,17 @@
 import { SHAPES } from "@/lib/shapes";
+import { SHAPES_2D } from "@/lib/shapes2d";
 import { digitsFromWords, parseSpokenNumber } from "@/lib/voice/numberWords";
+
+export type VoicePage = "home" | "functions" | "2d-shapes" | "3d-shapes";
 
 export type VoiceCommand =
   | { type: "setFunction"; expression: string }
   | { type: "setXMin"; value: number }
   | { type: "setXMax"; value: number }
   | { type: "setDomain"; min: number; max: number }
+  | { type: "setSpeed"; value: number }
   | { type: "selectShape"; shapeId: string }
-  | { type: "navigate"; page: "home" | "shapes" | "functions" }
+  | { type: "navigate"; page: VoicePage }
   | { type: "moveCursor"; direction: "left" | "right"; fast: boolean }
   | { type: "jump"; target: "max" | "min" | "inflection" | "start" | "end" | "next" | "previous" }
   | { type: "audio"; action: "start" | "stop" }
@@ -79,33 +83,57 @@ export function normalizeSpokenMath(input: string): string {
   return text;
 }
 
+const SHAPE_ALIASES: Record<string, string> = {
+  ball: "sphere",
+  globe: "sphere",
+  box: "cube",
+  tube: "cylinder",
+  "ice cream cone": "cone",
+  egg: "ellipsoid",
+  cuboid: "rectangular-prism",
+  "rectangular prism": "rectangular-prism",
+  "triangular prism": "triangular-prism",
+  "random point": "random-point",
+  random: "random-point",
+  "oblong": "rectangle",
+  "three sided": "triangle",
+  "five sided": "pentagon",
+  "six sided": "hexagon",
+  round: "circle",
+};
+
+/**
+ * Resolves a spoken shape name across both libraries. The longest match wins,
+ * so "triangular prism" is never mistaken for "triangle".
+ */
 function matchShape(text: string): string | null {
-  const cleaned = text.replace(/\b(the|shape|solid|figure)\b/g, " ");
-  for (const shape of SHAPES) {
-    const name = shape.name.toLowerCase();
-    if (cleaned.includes(name)) return shape.id;
-    if (cleaned.includes(shape.id)) return shape.id;
+  const cleaned = text.replace(/\b(the|shape|solid|figure|polygon)\b/g, " ");
+  const candidates: Array<[string, string]> = [
+    ...[...SHAPES, ...SHAPES_2D].flatMap((shape) => {
+      const spoken = shape.id.replace(/-/g, " ");
+      return [
+        [shape.name.toLowerCase(), shape.id] as [string, string],
+        [spoken, shape.id] as [string, string],
+      ];
+    }),
+    ...Object.entries(SHAPE_ALIASES),
+  ];
+
+  let best: { id: string; length: number } | null = null;
+  for (const [needle, id] of candidates) {
+    if (cleaned.includes(needle) && (!best || needle.length > best.length)) {
+      best = { id, length: needle.length };
+    }
   }
-  const aliases: Record<string, string> = {
-    ball: "sphere",
-    globe: "sphere",
-    box: "cube",
-    saddle: "saddle",
-    "hyperbolic paraboloid": "saddle",
-    doughnut: "torus",
-    donut: "torus",
-    "mobius strip": "mobius",
-    mobius: "mobius",
-    "moebius": "mobius",
-    tube: "cylinder",
-    "ice cream cone": "cone",
-    egg: "ellipsoid",
-    "twelve sided": "dodecahedron",
-  };
-  for (const [alias, id] of Object.entries(aliases)) {
-    if (cleaned.includes(alias)) return id;
-  }
-  return null;
+  return best?.id ?? null;
+}
+
+export const MIN_SPEED = 0.2;
+export const MAX_SPEED = 5;
+
+export function clampSpeed(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(MAX_SPEED, Math.max(MIN_SPEED, Math.round(value * 10) / 10));
 }
 
 export function parseVoiceCommand(rawTranscript: string): VoiceCommand {
@@ -123,12 +151,28 @@ export function parseVoiceCommand(rawTranscript: string): VoiceCommand {
     return { type: "describe" };
   }
 
-  // Navigation between the two main surfaces.
+  // Speed control: "set speed to two x", "speed 0.5", "faster", "slower".
+  const speed = transcript.match(
+    /\b(?:set\s+)?(?:the\s+)?speed\b\s*(?:to|=|is|at)?\s*(.+)$/,
+  );
+  if (speed) {
+    const value = parseSpokenNumber(speed[1].replace(/\bx\b/g, " "));
+    if (value !== null) return { type: "setSpeed", value: clampSpeed(value) };
+  }
+
+  // Navigation between the surfaces. Dimension is checked before the generic
+  // "shapes" fallback so "2d shapes" never lands on the 3D library.
   if (/\b(go to|open|show|navigate to)\b/.test(transcript)) {
-    if (/\b(shape|3d|library|solid)\b/.test(transcript)) return { type: "navigate", page: "shapes" };
-    if (/\b(function|graph|2d|explorer|plot)\b/.test(transcript)) {
+    if (/\b(2d|two d|two dimensional|flat|polygon)\b.*\b(shape|library|polygon)\b/.test(transcript)) {
+      return { type: "navigate", page: "2d-shapes" };
+    }
+    if (/\b(3d|three d|three dimensional|spatial|solid)\b/.test(transcript)) {
+      return { type: "navigate", page: "3d-shapes" };
+    }
+    if (/\b(function|graph|explorer|plot|curve)\b/.test(transcript)) {
       return { type: "navigate", page: "functions" };
     }
+    if (/\b(shape|library)\b/.test(transcript)) return { type: "navigate", page: "3d-shapes" };
     if (/\b(home|start page|menu)\b/.test(transcript)) return { type: "navigate", page: "home" };
   }
 
@@ -190,11 +234,13 @@ export const VOICE_EXAMPLES: string[] = [
   "set x min to minus five",
   "set x max to ten",
   "set the domain from minus three to three",
+  "set speed to two x",
   "go to the maximum",
   "next critical point",
   "move right",
   "where am I",
   "select the sphere",
-  "open the shapes library",
+  "select the hexagon",
+  "open the 2d shapes library",
   "stop",
 ];

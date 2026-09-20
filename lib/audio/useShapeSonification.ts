@@ -17,6 +17,7 @@ interface ShapeGraph {
   gain: InstanceType<ToneModule["Gain"]>;
   panner: InstanceType<ToneModule["Panner3D"]>;
   click: InstanceType<ToneModule["Synth"]>;
+  ping: InstanceType<ToneModule["Synth"]>;
 }
 
 export interface ScanFrame {
@@ -76,7 +77,15 @@ export function useShapeSonification() {
         volume: -22,
       }).toDestination();
 
-      graphRef.current = { Tone, osc, gain, panner, click };
+      // The random point ping shares the 3D panner, so it is localised in
+      // exactly the same way the scans are.
+      const ping = new Tone.Synth({
+        oscillator: { type: "triangle" },
+        envelope: { attack: 0.002, decay: 0.32, sustain: 0, release: 0.12 },
+        volume: -4,
+      }).connect(panner);
+
+      graphRef.current = { Tone, osc, gain, panner, click, ping };
       setError(null);
       return graphRef.current;
     } catch (err) {
@@ -94,6 +103,26 @@ export function useShapeSonification() {
     if (graph) graph.gain.gain.rampTo(0, 0.1);
     setActiveShapeId(null);
   }, []);
+
+  /**
+   * Places the 3D panner at a single point and fires one short ping from it.
+   * Radius 3 keeps it clearly outside the listener's head while staying inside
+   * the panner's reference distance, so direction dominates over loudness.
+   */
+  const pingAt = useCallback(
+    async (point: Vec3) => {
+      const graph = await ensureGraph();
+      if (!graph) return;
+      stop();
+      const radius = 3;
+      graph.panner.setPosition(point.x * radius, point.y * radius, point.z * radius);
+      // Two quick notes: a single click is much harder to localise than a pair.
+      const now = graph.Tone.now();
+      graph.ping.triggerAttackRelease(660, 0.12, now);
+      graph.ping.triggerAttackRelease(880, 0.18, now + 0.2);
+    },
+    [ensureGraph, stop],
+  );
 
   const scan = useCallback(
     async (shape: Shape3D) => {
@@ -158,7 +187,7 @@ export function useShapeSonification() {
       const graph = graphRef.current;
       graphRef.current = null;
       if (!graph) return;
-      [graph.osc, graph.gain, graph.panner, graph.click].forEach((node) => {
+      [graph.osc, graph.gain, graph.panner, graph.click, graph.ping].forEach((node) => {
         try {
           node.dispose();
         } catch {
@@ -168,5 +197,5 @@ export function useShapeSonification() {
     };
   }, []);
 
-  return { scan, stop, activeShapeId, frame, error, isScanning: activeShapeId !== null };
+  return { scan, pingAt, stop, activeShapeId, frame, error, isScanning: activeShapeId !== null };
 }

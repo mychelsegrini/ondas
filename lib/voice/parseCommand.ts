@@ -1,6 +1,8 @@
 import { SHAPES } from "@/lib/shapes";
 import { SHAPES_2D } from "@/lib/shapes2d";
+import { cannedHelpAnswer } from "@/lib/voice/feedback";
 import { digitsFromWords, parseSpokenNumber } from "@/lib/voice/numberWords";
+import { splitWakeWord } from "@/lib/voice/wakeWord";
 
 export type VoicePage = "home" | "functions" | "2d-shapes" | "3d-shapes" | "multivariable";
 
@@ -18,7 +20,8 @@ export type VoiceCommand =
   | { type: "autoPlay" }
   | { type: "audio"; action: "start" | "stop" }
   | { type: "describe" }
-  | { type: "help" }
+  | { type: "help"; answer?: string }
+  | { type: "skip" }
   | { type: "unknown"; transcript: string };
 
 export const VOICE_PAGES: VoicePage[] = [
@@ -169,10 +172,22 @@ export function clampSpeed(value: number): number {
 }
 
 export function parseVoiceCommand(rawTranscript: string): VoiceCommand {
-  const transcript = rawTranscript.toLowerCase().trim().replace(/[.!?]+$/, "");
+  const stripped = splitWakeWord(rawTranscript).command;
+  const transcript = stripped.toLowerCase().trim().replace(/[.!?]+$/, "");
   if (!transcript) return { type: "unknown", transcript: rawTranscript };
 
-  if (/\b(help|what can i say|commands)\b/.test(transcript)) return { type: "help" };
+  if (/\b(skip|stop (?:the )?(?:tutorial|intro|onboarding|welcome))\b/.test(transcript)) {
+    return { type: "skip" };
+  }
+
+  const helpAnswer = cannedHelpAnswer(transcript);
+  if (helpAnswer && /\b(what|which|list|tell me|how many)\b/.test(transcript)) {
+    return { type: "help", answer: helpAnswer };
+  }
+
+  if (/\b(help|what can i say|commands)\b/.test(transcript)) {
+    return { type: "help", answer: helpAnswer ?? undefined };
+  }
 
   if (/\b(stop|mute|silence|pause)\b/.test(transcript)) return { type: "audio", action: "stop" };
   if (/\b(start|enable|unmute|turn on)\b.*\b(audio|sound|tone)\b/.test(transcript)) {
@@ -302,5 +317,7 @@ export const VOICE_EXAMPLES: string[] = [
   "open the 2d shapes library",
   "set the surface to sine x times cosine y",
   "open the surface explorer",
+  "hey ondas skip",
+  "what 2d shapes are there",
   "stop",
 ];

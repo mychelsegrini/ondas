@@ -12,34 +12,30 @@ import {
   type ReactNode,
 } from "react";
 
+import { playWakeBoop } from "@/lib/audio/wakeBoop";
 import { SHAPES_2D } from "@/lib/shapes2d";
+import { feedbackFor } from "@/lib/voice/feedback";
 import {
   pageToRoute,
   parseVoiceCommand,
-  VOICE_EXAMPLES,
   type VoiceCommand,
-  type VoicePage,
 } from "@/lib/voice/parseCommand";
+import { cancelSpeech, speak } from "@/lib/voice/speak";
+import { hasWakeWord, splitWakeWord } from "@/lib/voice/wakeWord";
 
 /** Returning true means "handled, stop propagating to other handlers". */
 export type VoiceHandler = (command: VoiceCommand) => boolean;
 
-/** Where the interpretation came from, shown in the UI so it is never a mystery. */
 export type CommandSource = "llm" | "local";
 
-const PAGE_LABELS: Record<VoicePage, string> = {
-  home: "home page",
-  functions: "functions explorer",
-  "2d-shapes": "2D shapes library",
-  "3d-shapes": "3D shapes library",
-  multivariable: "surface explorer",
-};
+const TUTORIAL_STORAGE_KEY = "ondas-tutorial-played";
 
 interface VoiceContextValue {
   isSupported: boolean;
   isListening: boolean;
-  /** True while a transcript is being routed by the language model. */
   isRouting: boolean;
+  /** True from the wake-word boop until the command is applied. */
+  isAwake: boolean;
   transcript: string;
   lastCommand: VoiceCommand | null;
   lastSource: CommandSource | null;
@@ -47,13 +43,11 @@ interface VoiceContextValue {
   startListening: () => void;
   stopListening: () => void;
   toggleListening: () => void;
-  /** Pages register their own handlers; the most recent one gets first refusal. */
   registerHandler: (handler: VoiceHandler) => () => void;
-  /** Sends a message to the global polite live region. */
   announce: (message: string) => void;
   announcement: string;
-  /** Routes a phrase exactly as if it had been spoken. Useful for testing. */
   submitTranscript: (text: string) => Promise<void>;
+  speak: typeof speak;
 }
 
 const VoiceContext = createContext<VoiceContextValue | null>(null);
@@ -63,12 +57,14 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const handlersRef = useRef<VoiceHandler[]>([]);
   const shouldListenRef = useRef(false);
-  /** Guards against an earlier, slower round trip overwriting a newer one. */
   const requestIdRef = useRef(0);
+  /** Prevents a second boop while the same utterance is still coming in. */
+  const boopedRef = useRef(false);
 
   const [isSupported, setIsSupported] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isRouting, setIsRouting] = useState(false);
+  const [isAwake, setIsAwake] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [lastCommand, setLastCommand] = useState<VoiceCommand | null>(null);
   const [lastSource, setLastSource] = useState<CommandSource | null>(null);
@@ -76,7 +72,6 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const [announcement, setAnnouncement] = useState("");
 
   const announce = useCallback((message: string) => {
-    // Re-announce identical messages by nudging the string with a zero width space.
     setAnnouncement((previous) => (previous === message ? `${message}\u200b` : message));
   }, []);
 
@@ -87,46 +82,62 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  /** Offers a command to the mounted pages, then to the app-wide fallbacks. */
   const applyCommand = useCallback(
-    (command: VoiceCommand) => {
+    (command: VoiceCommand, feedbackText?: string) => {
       setLastCommand(command);
+
+      const spoken = (feedbackText ?? feedbackFor(command)).trim();
+      if (command.type === "skip") {
+        cancelSpeech();
+        try {
+          sessionStorage.setItem(TUTORIAL_STORAGE_KEY, "1");
+        } catch {
+          /* private mode */
+        }
+        if (spoken) speak(spoken, true);
+      } else if (spoken) {
+        speak(spoken, true);
+      }
+      if (spoken) announce(spoken);
+
+      if (command.type === "skip") {
+        for (let i = handlersRef.current.length - 1; i >= 0; i -= 1) {
+          handlersRef.current[i](command);
+        }
+        return;
+      }
+
+      // Conversational HELP is the whole action: do not let a page overwrite
+      // the spoken answer with a generic command list.
+      if (command.type === "help") return;
 
       for (let i = handlersRef.current.length - 1; i >= 0; i -= 1) {
         if (handlersRef.current[i](command)) return;
       }
 
-      // Fallbacks that work from anywhere in the app.
       if (command.type === "navigate") {
         router.push(pageToRoute(command.page));
-        announce(`Opening the ${PAGE_LABELS[command.page]}.`);
         return;
       }
       if (command.type === "selectShape") {
-        // The shape's own library page owns the command, so route by dimension.
         const is2D = SHAPES_2D.some((shape) => shape.id === command.shapeId);
         router.push(`/${is2D ? "2d-shapes" : "3d-shapes"}?shape=${command.shapeId}`);
         return;
       }
       if (command.type === "setMultiFunction") {
-        // Carry the equation across the navigation so it is not lost.
         router.push(`/multivariable?f=${encodeURIComponent(command.expression)}`);
-        announce(`Opening the surface explorer with z equals ${command.expression}.`);
         return;
       }
       if (command.type === "setFunction") {
         router.push(`/functions?f=${encodeURIComponent(command.expression)}`);
-        announce(`Opening the functions explorer with y equals ${command.expression}.`);
         return;
       }
       if (command.type === "autoPlay") {
         router.push("/functions?play=1");
-        announce("Opening the functions explorer to play the curve.");
         return;
       }
       if (command.type === "setSpeed") {
         router.push(`/functions?speed=${command.value}`);
-        announce(`Opening the functions explorer at ${command.value} times speed.`);
         return;
       }
       if (
@@ -135,24 +146,14 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         command.type === "setDomain"
       ) {
         router.push("/functions");
-        announce("Opening the functions explorer. Please repeat the command.");
-        return;
-      }
-      if (command.type === "help") {
-        announce(`Try saying: ${VOICE_EXAMPLES.slice(0, 5).join("; ")}.`);
-        return;
-      }
-      if (command.type === "unknown") {
-        announce(`Command not recognised: ${command.transcript}. Say help for examples.`);
       }
     },
     [announce, router],
   );
 
   /**
-   * Sends the transcript to the language model router and applies whatever
-   * comes back. The deterministic parser runs locally if the round trip fails,
-   * so voice control survives an outage, a missing key, or being offline.
+   * Routes a command string (already stripped of the wake word). Used by the
+   * recogniser and by tests. Speaks `feedbackText` before any navigation.
    */
   const submitTranscript = useCallback(
     async (text: string) => {
@@ -170,16 +171,24 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
           body: JSON.stringify({ transcript: phrase }),
         });
         if (!response.ok) throw new Error(`Voice router returned ${response.status}`);
-        const data = (await response.json()) as { command: VoiceCommand; source: CommandSource };
+        const data = (await response.json()) as {
+          command: VoiceCommand;
+          source: CommandSource;
+          feedbackText?: string;
+        };
         if (requestIdRef.current !== requestId) return;
         setLastSource(data.source);
-        applyCommand(data.command);
+        applyCommand(data.command, data.feedbackText);
       } catch {
         if (requestIdRef.current !== requestId) return;
         setLastSource("local");
-        applyCommand(parseVoiceCommand(phrase));
+        const command = parseVoiceCommand(phrase);
+        applyCommand(command, feedbackFor(command));
       } finally {
-        if (requestIdRef.current === requestId) setIsRouting(false);
+        if (requestIdRef.current === requestId) {
+          setIsRouting(false);
+          setIsAwake(false);
+        }
       }
     },
     [applyCommand],
@@ -208,7 +217,27 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         const result = event.results[i];
         const text = result[0].transcript.trim();
         setTranscript(text);
-        if (result.isFinal && text) void submitRef.current(text);
+
+        // Boop on the first interim chunk that contains the wake word so the
+        // listener hears confirmation before they finish the sentence.
+        if (!boopedRef.current && hasWakeWord(text)) {
+          boopedRef.current = true;
+          setIsAwake(true);
+          playWakeBoop();
+        }
+
+        if (!result.isFinal || !text) continue;
+
+        boopedRef.current = false;
+        const { hasWake, command } = splitWakeWord(text);
+        if (!hasWake) continue;
+
+        if (!command) {
+          speak("Yes?", true);
+          announce("Listening for a command.");
+          continue;
+        }
+        void submitRef.current(command);
       }
     };
 
@@ -221,10 +250,11 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       );
       shouldListenRef.current = false;
       setIsListening(false);
+      setIsAwake(false);
     };
 
     recognition.onend = () => {
-      // Chrome stops the service after a pause; restart to keep it always on.
+      boopedRef.current = false;
       if (shouldListenRef.current) {
         try {
           recognition.start();
@@ -249,7 +279,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       }
       recognitionRef.current = null;
     };
-  }, []);
+  }, [announce]);
 
   const startListening = useCallback(() => {
     const recognition = recognitionRef.current;
@@ -259,7 +289,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     try {
       recognition.start();
       setIsListening(true);
-      announce("Voice commands on. Say help for examples.");
+      announce("Listening for Hey Ondas.");
     } catch {
       setIsListening(true);
     }
@@ -269,6 +299,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     const recognition = recognitionRef.current;
     shouldListenRef.current = false;
     setIsListening(false);
+    setIsAwake(false);
     if (!recognition) return;
     try {
       recognition.stop();
@@ -283,7 +314,6 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     else startListening();
   }, [isListening, startListening, stopListening]);
 
-  // Global shortcut so the microphone never requires a mouse: Shift + V.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() !== "v" || !event.shiftKey || event.metaKey || event.ctrlKey) return;
@@ -301,6 +331,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       isSupported,
       isListening,
       isRouting,
+      isAwake,
       transcript,
       lastCommand,
       lastSource,
@@ -312,11 +343,13 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       announce,
       announcement,
       submitTranscript,
+      speak,
     }),
     [
       announce,
       announcement,
       error,
+      isAwake,
       isListening,
       isRouting,
       isSupported,
@@ -349,7 +382,6 @@ export function useVoiceCommands(): VoiceContextValue {
   return context;
 }
 
-/** Subscribes a page to voice commands for as long as it is mounted. */
 export function useVoiceHandler(handler: VoiceHandler) {
   const { registerHandler } = useVoiceCommands();
   const handlerRef = useRef(handler);
@@ -359,3 +391,5 @@ export function useVoiceHandler(handler: VoiceHandler) {
     return registerHandler((command) => handlerRef.current(command));
   }, [registerHandler]);
 }
+
+export { TUTORIAL_STORAGE_KEY };

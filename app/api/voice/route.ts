@@ -10,6 +10,7 @@ import {
   pageToRoute,
   type VoiceCommand,
 } from "@/lib/voice/parseCommand";
+import { defaultHelpText, feedbackFor } from "@/lib/voice/feedback";
 
 export const runtime = "nodejs";
 /** The router depends on a live upstream call, so it must never be cached. */
@@ -31,7 +32,9 @@ export type LlmAction =
   | "SET_MULTI_FUNC"
   | "SELECT_SHAPE"
   | "AUTO_PLAY"
-  | "SET_SPEED";
+  | "SET_SPEED"
+  | "HELP"
+  | "SKIP";
 
 export interface LlmPayload {
   route?: string;
@@ -43,35 +46,49 @@ export interface LlmPayload {
 export interface LlmCommand {
   action: LlmAction | "UNKNOWN";
   payload: LlmPayload;
+  /** Exact sentence the client reads aloud before acting. */
+  feedbackText: string;
 }
 
 export interface VoiceRouteResponse {
-  /** Structured result in the LLM schema the client switches on. */
   action: LlmAction | "UNKNOWN";
   payload: LlmPayload;
-  /** The same intent in the app's internal command shape. */
+  feedbackText: string;
   command: VoiceCommand;
-  /** Which path produced the result, surfaced in the UI for transparency. */
   source: "llm" | "local";
   transcript: string;
 }
 
-const SYSTEM_PROMPT = `You are the command router for "Ondas", an audio application that teaches mathematics to blind and low-vision users by turning it into sound.
+const SYSTEM_PROMPT = `You are the command router and spoken assistant for "Ondas", an audio application that teaches mathematics to blind and low-vision users by turning it into sound.
+
+The user has already said the wake phrase "Hey Ondas" or "Hi Ondas". You receive only the command that followed it.
 
 Return ONLY a JSON object. No prose, no markdown, no code fences.
 
 Schema:
 {
-  "action": "NAVIGATE" | "SET_2D_FUNC" | "SET_MULTI_FUNC" | "SELECT_SHAPE" | "AUTO_PLAY" | "SET_SPEED" | "UNKNOWN",
+  "action": "NAVIGATE" | "SET_2D_FUNC" | "SET_MULTI_FUNC" | "SELECT_SHAPE" | "AUTO_PLAY" | "SET_SPEED" | "HELP" | "SKIP" | "UNKNOWN",
   "payload": {
     "route": string,
     "equation": string,
     "targetShape": string,
     "speedMultiplier": number
-  }
+  },
+  "feedbackText": "The exact sentence the app will read aloud BEFORE it performs the action."
 }
 
-Include only the payload fields that the chosen action needs. Use "UNKNOWN" when the request does not map to an action.
+feedbackText is required. Keep it to one or two short sentences. Speak as a calm assistant.
+
+feedbackText rules:
+- NAVIGATE: confirm before it happens. Examples: "Opening 3D shapes library." "Navigating to Multivariable Calculus." "Opening the functions explorer."
+- SET_2D_FUNC: read the equation clearly. Example: "Plotting function sine of x."
+- SET_MULTI_FUNC: "Plotting the surface sine of x times cosine of y."
+- SELECT_SHAPE: "Selecting the cylinder."
+- AUTO_PLAY: "Playing the curve."
+- SET_SPEED: "Setting speed to two times."
+- SKIP: the user wants to stop the welcome tutorial. "Tutorial skipped."
+- HELP: answer the question clearly and concisely. If they ask "What 2D shapes are there?", say "We currently have a Square, Rectangle, Equilateral Triangle, Circle, Pentagon, and Hexagon." If they ask about 3D shapes, list: random point, sphere, cube, rectangular prism, triangular prism, cylinder, cone, pyramid, ellipsoid. If they just say help, explain that they can navigate, plot equations, select shapes, or auto play.
+- UNKNOWN: "I did not catch that. Say Hey Ondas, help for examples."
 
 Actions:
 - NAVIGATE: payload.route is one of "/", "/functions", "/2d-shapes", "/3d-shapes", "/multivariable".
@@ -85,6 +102,8 @@ Actions:
   square, rectangle, triangle, circle, pentagon, hexagon.
 - AUTO_PLAY: no payload. Use for "play it", "sweep the curve", "auto play".
 - SET_SPEED: payload.speedMultiplier is a number between ${MIN_SPEED} and ${MAX_SPEED}.
+- HELP: questions and "what can I say". Put the full spoken answer in feedbackText. payload may be empty.
+- SKIP: "skip", "skip the tutorial", "stop the intro". payload may be empty.
 
 The input is raw speech, so expect dictated mathematics. Convert it to mathjs syntax:
 "sine of x times x" -> "sin(x)*x"; "x squared plus three" -> "x^2+3";
@@ -92,17 +111,15 @@ The input is raw speech, so expect dictated mathematics. Convert it to mathjs sy
 Speech recognition usually transcribes the variable y as the word "why".
 
 Examples:
-"open the surface explorer" -> {"action":"NAVIGATE","payload":{"route":"/multivariable"}}
-"plot sine of x over x" -> {"action":"SET_2D_FUNC","payload":{"equation":"sin(x)/x"}}
-"make the surface sine x times cosine why" -> {"action":"SET_MULTI_FUNC","payload":{"equation":"sin(x)*cos(y)"}}
-"let me hear the cylinder" -> {"action":"SELECT_SHAPE","payload":{"targetShape":"cylinder"}}
-"go through the whole thing" -> {"action":"AUTO_PLAY","payload":{}}
-"twice as fast please" -> {"action":"SET_SPEED","payload":{"speedMultiplier":2}}`;
+"open 3d shapes" -> {"action":"NAVIGATE","payload":{"route":"/3d-shapes"},"feedbackText":"Opening 3D shapes library."}
+"plot sine of x" -> {"action":"SET_2D_FUNC","payload":{"equation":"sin(x)"},"feedbackText":"Plotting function sine of x."}
+"what 2D shapes are there?" -> {"action":"HELP","payload":{},"feedbackText":"We currently have a Square, Rectangle, Equilateral Triangle, Circle, Pentagon, and Hexagon."}
+"skip" -> {"action":"SKIP","payload":{},"feedbackText":"Tutorial skipped."}`;
 
 const RESPONSE_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["action", "payload"],
+  required: ["action", "payload", "feedbackText"],
   properties: {
     action: {
       type: "string",
@@ -113,6 +130,8 @@ const RESPONSE_SCHEMA = {
         "SELECT_SHAPE",
         "AUTO_PLAY",
         "SET_SPEED",
+        "HELP",
+        "SKIP",
         "UNKNOWN",
       ],
     },
@@ -126,6 +145,7 @@ const RESPONSE_SCHEMA = {
         speedMultiplier: { type: "number" },
       },
     },
+    feedbackText: { type: "string" },
   },
 } as const;
 
@@ -203,26 +223,36 @@ function toVoiceCommand(result: LlmCommand, transcript: string): VoiceCommand | 
     const value = Number(payload.speedMultiplier);
     return Number.isFinite(value) ? { type: "setSpeed", value: clampSpeed(value) } : null;
   }
+  if (action === "HELP") {
+    const answer = result.feedbackText?.trim() || defaultHelpText();
+    return { type: "help", answer };
+  }
+  if (action === "SKIP") return { type: "skip" };
   return { type: "unknown", transcript };
 }
 
 /** Expresses an internal command back in the LLM schema, for the client. */
 function toLlmShape(command: VoiceCommand): LlmCommand {
+  const feedbackText = feedbackFor(command);
   switch (command.type) {
     case "navigate":
-      return { action: "NAVIGATE", payload: { route: pageToRoute(command.page) } };
+      return { action: "NAVIGATE", payload: { route: pageToRoute(command.page) }, feedbackText };
     case "setFunction":
-      return { action: "SET_2D_FUNC", payload: { equation: command.expression } };
+      return { action: "SET_2D_FUNC", payload: { equation: command.expression }, feedbackText };
     case "setMultiFunction":
-      return { action: "SET_MULTI_FUNC", payload: { equation: command.expression } };
+      return { action: "SET_MULTI_FUNC", payload: { equation: command.expression }, feedbackText };
     case "selectShape":
-      return { action: "SELECT_SHAPE", payload: { targetShape: command.shapeId } };
+      return { action: "SELECT_SHAPE", payload: { targetShape: command.shapeId }, feedbackText };
     case "autoPlay":
-      return { action: "AUTO_PLAY", payload: {} };
+      return { action: "AUTO_PLAY", payload: {}, feedbackText };
     case "setSpeed":
-      return { action: "SET_SPEED", payload: { speedMultiplier: command.value } };
+      return { action: "SET_SPEED", payload: { speedMultiplier: command.value }, feedbackText };
+    case "help":
+      return { action: "HELP", payload: {}, feedbackText };
+    case "skip":
+      return { action: "SKIP", payload: {}, feedbackText };
     default:
-      return { action: "UNKNOWN", payload: {} };
+      return { action: "UNKNOWN", payload: {}, feedbackText };
   }
 }
 
@@ -265,7 +295,11 @@ async function callModel(transcript: string): Promise<LlmCommand | null> {
 
     const parsed = extractJson(content) as LlmCommand | null;
     if (!parsed || typeof parsed.action !== "string") return null;
-    return { action: parsed.action, payload: parsed.payload ?? {} };
+    const feedbackText =
+      typeof parsed.feedbackText === "string" && parsed.feedbackText.trim()
+        ? parsed.feedbackText.trim()
+        : "";
+    return { action: parsed.action, payload: parsed.payload ?? {}, feedbackText };
   } catch (err) {
     // Timeouts and network faults fall through to the deterministic parser.
     console.warn("[voice] model call failed:", (err as Error).message);
@@ -296,9 +330,11 @@ export async function POST(request: Request) {
   // app's users, so it has to keep working with no key, no network, or a
   // model reply that does not survive validation.
   if (fromLlm && fromLlm.type !== "unknown") {
+    const feedbackText = llm!.feedbackText || feedbackFor(fromLlm);
     const payload: VoiceRouteResponse = {
       action: llm!.action,
       payload: llm!.payload ?? {},
+      feedbackText,
       command: fromLlm,
       source: "llm",
       transcript,
@@ -311,6 +347,7 @@ export async function POST(request: Request) {
   const payload: VoiceRouteResponse = {
     action: shape.action,
     payload: shape.payload,
+    feedbackText: shape.feedbackText,
     command: local,
     source: "local",
     transcript,

@@ -3,13 +3,13 @@
 import { AnimatePresence, motion } from "framer-motion";
 
 import { useVoiceCommands } from "@/contexts/VoiceContext";
-import { VOICE_EXAMPLES } from "@/lib/voice/parseCommand";
 
 export function VoiceBar() {
   const {
     isSupported,
     isListening,
     isRouting,
+    isAwake,
     transcript,
     lastSource,
     toggleListening,
@@ -27,7 +27,9 @@ export function VoiceBar() {
           aria-pressed={isListening}
           className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-colors ${
             isListening
-              ? "bg-fuchsia-500 text-zinc-950 hover:bg-fuchsia-400"
+              ? isAwake
+                ? "bg-cyan-400 text-zinc-950 hover:bg-cyan-300"
+                : "bg-fuchsia-500 text-zinc-950 hover:bg-fuchsia-400"
               : "bg-zinc-900 text-zinc-200 ring-1 ring-zinc-700 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
           }`}
         >
@@ -37,7 +39,7 @@ export function VoiceBar() {
               isListening ? "animate-pulse bg-zinc-950" : "bg-emerald-400"
             }`}
           />
-          {isListening ? "Listening — click to stop" : "Start voice commands"}
+          {isListening ? (isAwake ? "Heard Hey Ondas" : "Listening for Hey Ondas") : "Start voice commands"}
           <kbd className="ml-1 rounded border border-current/30 px-1.5 py-0.5 text-[10px] font-medium opacity-70">
             Shift + V
           </kbd>
@@ -87,9 +89,8 @@ export function VoiceBar() {
               </motion.p>
             ) : (
               <p className="truncate text-sm text-zinc-500">
-                Try: <span className="font-mono text-zinc-400">{VOICE_EXAMPLES[0]}</span> ·{" "}
-                <span className="font-mono text-zinc-400">{VOICE_EXAMPLES[1]}</span> ·{" "}
-                <span className="font-mono text-zinc-400">{VOICE_EXAMPLES[8]}</span>
+                Try: <span className="font-mono text-zinc-400">Hey Ondas, plot sine of x</span> ·{" "}
+                <span className="font-mono text-zinc-400">Hey Ondas, help</span>
               </p>
             )}
           </AnimatePresence>

@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { HomeOnboarding } from "@/components/HomeOnboarding";
+
 const FEATURES = [
   {
     title: "Height becomes pitch",
@@ -31,6 +33,7 @@ const FEATURES = [
 export default function HomePage() {
   return (
     <div className="mx-auto max-w-7xl px-6 py-16 sm:py-24">
+      <HomeOnboarding />
       <section className="max-w-3xl">
         <p className="mb-4 inline-flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1 text-xs font-medium uppercase tracking-widest text-cyan-300">
           Data sonification
@@ -108,8 +111,10 @@ export default function HomePage() {
             <kbd className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-200">←</kbd> and{" "}
             <kbd className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-200">→</kbd> keys to
             move the cursor along the curve, or press{" "}
-            <kbd className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-200">Shift + V</kbd> and
-            speak.
+            <kbd className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-200">Shift + V</kbd> to
+            enable the microphone, then say{" "}
+            <span className="font-medium text-zinc-200">Hey Ondas</span> followed by a command. Say{" "}
+            <span className="font-medium text-zinc-200">Hey Ondas, skip</span> to stop this welcome.
           </li>
         </ol>
       </section>

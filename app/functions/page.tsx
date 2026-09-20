@@ -14,7 +14,7 @@ export default function FunctionsPage() {
     <Suspense fallback={<p className="px-6 py-10 text-zinc-500">Loading the function explorer…</p>}>
       <SectionTutorial
         storageKey="ondas-tutorial-functions"
-        script="Functions section. Type an equation or say 'hey, plot sine of x'. Use your left and right arrow keys to move the cursor. As you move, the sound pans from your left to right ear to represent the X axis. The pitch of the sound represents the Y axis: high pitch means the graph is going up, low pitch means it is going down. You will hear special chimes when you cross a local maximum, minimum, or inflection point."
+        script="Functions section. Type an equation or say 'Hey Ondas, plot sine of x'. Use your left and right arrow keys to move the cursor, or say 'Hey Ondas, sweep' for an automatic sweep. As you move, the sound pans left to right, and the pitch represents the Y axis."
       />
       <FunctionExplorer />
     </Suspense>

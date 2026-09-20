@@ -33,6 +33,7 @@ export type LlmAction =
   | "SET_MULTI_FUNC"
   | "SELECT_SHAPE"
   | "AUTO_PLAY"
+  | "SWEEP"
   | "SET_SPEED"
   | "HELP"
   | "SKIP"
@@ -64,41 +65,47 @@ export interface VoiceRouteResponse {
 const CONNECT_ERROR =
   "I'm sorry, I couldn't connect to the server. Please check your API keys.";
 
-const SYSTEM_PROMPT = `You are Muse, the intelligent voice assistant for 'Ondas', an accessible web application that sonifies mathematics for visually impaired users.
-Your job is to interpret the user's spoken command and route them to the correct action.
+const systemPrompt = `You are Muse, the JSON command router for 'Ondas', an accessible math sonification app.
+Your ONLY job is to map the user's transcript to the correct action JSON. Do not act like a conversational AI.
 
-### Critical Rules:
-1. You must output ONLY valid JSON. No markdown formatting, no conversational filler before or after the JSON.
-2. The 'feedbackText' will be read aloud by a TTS engine. It must be concise, natural, and contain NO markdown (no *, #, or \` symbols). Spell out symbols if necessary (e.g., "sine of x", not "sin(x)").
-3. Always be helpful. If the user is confused or asks what they can do, guide them concisely.
-
-### Application Knowledge Base:
-- Sections Available: 2D Functions, Multivariable Calculus, 2D Shapes, and 3D Shapes.
+### Application Knowledge Base (Use this to answer HELP requests):
+- Sections: 2D Functions, Multivariable Calculus, 2D Shapes, and 3D Shapes.
 - 2D Shapes Available: Square, Rectangle, Equilateral Triangle, Circle, Regular Pentagon, Regular Hexagon.
 - 3D Shapes Available: Sphere, Cube, Pyramid, Cylinder, Cone, Ellipsoid, Rectangular Prism, Triangular Prism, and 'Single Random Point'.
-- Functionalities: Users can plot equations, change the speed of the cursor (0.2x to 5x), and explore shapes via spatial audio.
+- Capabilities: Plot mathematical equations, play shapes via 3D spatial audio, change cursor speed, or trigger automatic sweeps.
 
-### Expected JSON Schema:
+### Available Actions & Routing Rules:
+- SELECT_SHAPE: Use when the user wants to play/hear a shape (e.g., "play cube"). Route to "/3d-shapes" for 3D, or "/2d-shapes" for 2D.
+- SET_2D_FUNC: Use when the user dictates a math equation (e.g., "plot x squared" OR just "x squared"). If the user just says a mathematical expression without a verb, ALWAYS default to this action. Route to "/functions".
+- SWEEP: Use when the user says "sweep" or "auto play".
+- NAVIGATE: Use to change pages without a specific shape/function (e.g., "go to multivariable").
+- HELP: USE ONLY IF the user explicitly asks for help, options, or what is available.
+
+### Expected JSON Format:
 {
-  "action": "NAVIGATE" | "SET_2D_FUNC" | "SET_MULTI_FUNC" | "SELECT_SHAPE" | "SET_SPEED" | "HELP" | "UNKNOWN",
+  "action": "ACTION_NAME",
   "payload": {
-    "route": "string or null",
-    "equation": "string or null (format for math.js)",
-    "targetShape": "string or null",
-    "speedMultiplier": "number or null"
+    "route": "/functions" | "/2d-shapes" | "/3d-shapes" | "/multivariable" | null,
+    "equation": "math string or null",
+    "targetShape": "shape name or null"
   },
-  "feedbackText": "string (The exact words the TTS should say to the user)"
+  "feedbackText": "string"
 }
 
-### Examples:
-- User: "What 3D shapes do you have?"
-  Response: {"action": "HELP", "payload": {}, "feedbackText": "In the 3D shapes library, we have a Sphere, Cube, Pyramid, Cylinder, Cone, Ellipsoid, Rectangular and Triangular prisms, and a single random spatial point."}
-- User: "Plot x squared plus two"
-  Response: {"action": "SET_2D_FUNC", "payload": {"equation": "x^2 + 2"}, "feedbackText": "Plotting function x squared plus two."}
-- User: "Play the circle"
-  Response: {"action": "SELECT_SHAPE", "payload": {"targetShape": "circle", "route": "/2d-shapes"}, "feedbackText": "Scanning the perimeter of a circle."}
-- User: "Make it faster, 2x speed"
-  Response: {"action": "SET_SPEED", "payload": {"speedMultiplier": 2}, "feedbackText": "Cursor speed set to 2x."}
+### RULES FOR 'feedbackText':
+1. For standard commands (plot, sweep, select), keep it under 5 words (e.g., "Plotting x squared").
+2. For HELP commands, generate a clear, explicative, and natural response based on exactly what they asked. Read lists clearly without markdown. 
+
+### EXAMPLES (FOLLOW THESE EXACTLY):
+
+User: "x squared"
+{"action": "SET_2D_FUNC", "payload": {"equation": "x^2", "route": "/functions"}, "feedbackText": "Plotting x squared."}
+
+User: "what 3d shapes are there?"
+{"action": "HELP", "payload": {}, "feedbackText": "In the 3D shapes library, we have a Sphere, Cube, Pyramid, Cylinder, Cone, Ellipsoid, Rectangular Prism, Triangular Prism, and a single random spatial point."}
+
+User: "help me"
+{"action": "HELP", "payload": {}, "feedbackText": "You can ask me to plot equations, navigate to multivariable calculus, or play spatial audio for 2D and 3D shapes. You can also say 'sweep' to auto-play a graph."}
 `;
 
 const RESPONSE_SCHEMA = {
@@ -114,6 +121,7 @@ const RESPONSE_SCHEMA = {
         "SET_MULTI_FUNC",
         "SELECT_SHAPE",
         "SET_SPEED",
+        "SWEEP",
         "HELP",
         "UNKNOWN",
       ],
@@ -209,7 +217,7 @@ function toVoiceCommand(result: LlmCommand, transcript: string): VoiceCommand | 
     const route = page === "2d-shapes" || page === "3d-shapes" ? pageToRoute(page) : undefined;
     return { type: "selectShape", shapeId, route };
   }
-  if (action === "AUTO_PLAY") return { type: "autoPlay" };
+  if (action === "AUTO_PLAY" || action === "SWEEP") return { type: "autoPlay" };
   if (action === "SET_SPEED") {
     const value = Number(payload.speedMultiplier);
     return Number.isFinite(value) ? { type: "setSpeed", value: clampSpeed(value) } : null;
@@ -238,7 +246,7 @@ function toLlmShape(command: VoiceCommand): LlmCommand {
     case "selectShape":
       return { action: "SELECT_SHAPE", payload: { targetShape: command.shapeId }, feedbackText };
     case "autoPlay":
-      return { action: "AUTO_PLAY", payload: {}, feedbackText };
+      return { action: "SWEEP", payload: {}, feedbackText };
     case "setSpeed":
       return { action: "SET_SPEED", payload: { speedMultiplier: command.value }, feedbackText };
     case "help":
@@ -334,6 +342,15 @@ async function callModel(transcript: string): Promise<LlmCommand | null> {
         ? parsed.feedbackText.trim()
         : "";
     const command = { action: parsed.action, payload: parsed.payload ?? {}, feedbackText };
+    if (
+      command.action !== "HELP" &&
+      command.action !== "ERROR" &&
+      command.action !== "UNKNOWN" &&
+      command.feedbackText
+    ) {
+      const words = command.feedbackText.split(/\s+/).filter(Boolean);
+      if (words.length > 5) command.feedbackText = words.slice(0, 5).join(" ");
+    }
     console.log("✅ LLM Successfully Parsed:", command);
     return command;
   } catch (err) {
@@ -364,7 +381,8 @@ export async function POST(request: Request) {
     const fromLlm = llm ? toVoiceCommand(llm, transcript) : null;
 
     if (fromLlm && fromLlm.type !== "unknown") {
-      const feedbackText = llm!.feedbackText || feedbackFor(fromLlm);
+      const feedbackText =
+        typeof llm!.feedbackText === "string" ? llm!.feedbackText : feedbackFor(fromLlm);
       const payload: VoiceRouteResponse = {
         action: llm!.action,
         payload: llm!.payload ?? {},

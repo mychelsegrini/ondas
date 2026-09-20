@@ -134,15 +134,20 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
           }
           break;
         }
-        case "SET_2D_FUNC":
-          if (payload.equation) {
-            console.log("📈 Setting 2D function:", payload.equation);
-            window.dispatchEvent(
-              new CustomEvent("ondas-set-equation", { detail: payload.equation }),
-            );
-            router.push(`/functions?f=${encodeURIComponent(payload.equation)}`);
+        case "SET_2D_FUNC": {
+          const equation = payload.equation;
+          if (equation) {
+            console.log("📈 Setting 2D function:", equation);
+            // Navigate first so FunctionExplorer can mount, then apply the equation.
+            if (window.location.pathname !== "/functions") {
+              router.push(`/functions?f=${encodeURIComponent(equation)}`);
+            }
+            window.setTimeout(() => {
+              window.dispatchEvent(new CustomEvent("ondas-set-equation", { detail: equation }));
+            }, 300);
           }
           break;
+        }
         case "SET_MULTI_FUNC":
           if (payload.equation) {
             console.log("📈 Setting surface:", payload.equation);
@@ -176,9 +181,13 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
             router.push(`/functions?speed=${encodeURIComponent(String(speed))}`);
           }
           break;
+        case "SWEEP":
         case "AUTO_PLAY":
-          console.log("▶️ Auto play");
-          router.push("/functions?play=1");
+          console.log("▶️ Sweep");
+          window.dispatchEvent(new CustomEvent("ondas-sweep"));
+          if (window.location.pathname !== "/functions") {
+            router.push("/functions?play=1");
+          }
           break;
         case "ERROR":
         case "UNKNOWN":
@@ -186,6 +195,10 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         default:
           break;
       }
+
+      // Sweep is started by the custom event above. Running the autoPlay
+      // handler as well would toggle the sweep off immediately.
+      if (data.action === "SWEEP" || data.action === "AUTO_PLAY") return;
 
       const command = data.command;
       if (!command || command.type === "help" || command.type === "unknown") return;

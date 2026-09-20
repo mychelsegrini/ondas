@@ -58,13 +58,13 @@ export function feedbackFor(command: VoiceCommand): string {
     case "navigate":
       return PAGE_FEEDBACK[command.page];
     case "setFunction":
-      return `Plotting function ${speakEquation(command.expression)}.`;
+      return `Plotting ${speakEquation(command.expression)}.`;
     case "setMultiFunction":
       return `Plotting the surface ${speakEquation(command.expression)}.`;
     case "selectShape":
       return `Selecting the ${command.shapeId.replace(/-/g, " ")}.`;
     case "autoPlay":
-      return "Playing the curve.";
+      return "Sweeping.";
     case "setSpeed":
       return `Setting speed to ${command.value} times.`;
     case "setXMin":

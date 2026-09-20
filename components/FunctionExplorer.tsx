@@ -327,6 +327,14 @@ export function FunctionExplorer() {
   }, [applyDraft, applySpeed, xMin, xMax]);
 
   useEffect(() => {
+    const handleSweep = () => {
+      void startSweep();
+    };
+    window.addEventListener("ondas-sweep", handleSweep);
+    return () => window.removeEventListener("ondas-sweep", handleSweep);
+  }, [startSweep]);
+
+  useEffect(() => {
     if (requestedPlay !== "1" || playedFromQuery.current) return;
     if (requestedFn && expression !== requestedFn) return;
     playedFromQuery.current = true;

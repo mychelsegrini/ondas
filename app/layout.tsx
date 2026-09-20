@@ -14,7 +14,13 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className="min-h-screen bg-zinc-950 text-zinc-200 antialiased">
+      {/*
+        Extensions such as Grammarly and password managers add attributes to
+        <body> before React hydrates, which reads as a server/client mismatch.
+        Suppression here is one level deep, so real mismatches inside the app
+        are still reported.
+      */}
+      <body className="min-h-screen bg-zinc-950 text-zinc-200 antialiased" suppressHydrationWarning>
         <VoiceCommandProvider>
           <a
             href="#main"

@@ -48,6 +48,32 @@ function cornerIndices(path: Vec2[]): Set<number> {
   return corners;
 }
 
+/** Silences and releases every node in a graph. Safe to call more than once. */
+function disposeGraph(graph: PolygonGraph) {
+  [graph.fundamental, graph.harmonic].forEach((osc) => {
+    try {
+      osc.stop();
+    } catch {
+      /* never started, or already stopped */
+    }
+  });
+  [
+    graph.fundamental,
+    graph.harmonic,
+    graph.fundamentalGain,
+    graph.harmonicGain,
+    graph.panner,
+    graph.master,
+    graph.corner,
+  ].forEach((node) => {
+    try {
+      node.dispose();
+    } catch {
+      /* already torn down */
+    }
+  });
+}
+
 /**
  * Traces the perimeter of a 2D polygon: horizontal position becomes stereo
  * balance, height becomes pitch, and height also opens up a third harmonic so
@@ -56,75 +82,113 @@ function cornerIndices(path: Vec2[]): Set<number> {
  */
 export function usePolygonSonification() {
   const graphRef = useRef<PolygonGraph | null>(null);
+  /** In-flight graph construction, shared by every caller that arrives during it. */
+  const pendingGraphRef = useRef<Promise<PolygonGraph | null> | null>(null);
+  const disposedRef = useRef(false);
   const frameRef = useRef<number | null>(null);
+  /**
+   * Incremented by every scan and every stop. A tick loop whose token is stale
+   * has been superseded and must not touch the audio graph again.
+   */
+  const runIdRef = useRef(0);
+
   const [activeShapeId, setActiveShapeId] = useState<string | null>(null);
   const [frame, setFrame] = useState<PolygonFrame | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const ensureGraph = useCallback(async (): Promise<PolygonGraph | null> => {
-    if (graphRef.current) return graphRef.current;
-    try {
-      const Tone = await import("tone");
-      await Tone.start();
+  const ensureGraph = useCallback((): Promise<PolygonGraph | null> => {
+    if (graphRef.current) return Promise.resolve(graphRef.current);
+    // Without this, two quick clicks each build a full graph while the first
+    // import is still in flight. The loser is overwritten but its oscillators
+    // keep playing with nothing left holding a reference to stop them.
+    if (pendingGraphRef.current) return pendingGraphRef.current;
 
-      const master = new Tone.Gain(0).toDestination();
-      const panner = new Tone.Panner(0).connect(master);
-      const fundamentalGain = new Tone.Gain(1).connect(panner);
-      const harmonicGain = new Tone.Gain(0).connect(panner);
-      const fundamental = new Tone.Oscillator({ frequency: 300, type: "sine" })
-        .connect(fundamentalGain)
-        .start();
-      const harmonic = new Tone.Oscillator({ frequency: 900, type: "sine" })
-        .connect(harmonicGain)
-        .start();
-      const corner = new Tone.MetalSynth({
-        envelope: { attack: 0.001, decay: 0.08, release: 0.02 },
-        harmonicity: 4.1,
-        modulationIndex: 18,
-        resonance: 3000,
-        octaves: 1.2,
-        volume: -28,
-      }).toDestination();
+    const pending = (async (): Promise<PolygonGraph | null> => {
+      try {
+        const Tone = await import("tone");
+        await Tone.start();
 
-      graphRef.current = {
-        Tone,
-        fundamental,
-        harmonic,
-        fundamentalGain,
-        harmonicGain,
-        panner,
-        master,
-        corner,
-      };
-      setError(null);
-      return graphRef.current;
-    } catch (err) {
-      setError((err as Error).message ?? "The audio engine could not be started.");
-      return null;
-    }
+        const master = new Tone.Gain(0).toDestination();
+        const panner = new Tone.Panner(0).connect(master);
+        const fundamentalGain = new Tone.Gain(1).connect(panner);
+        const harmonicGain = new Tone.Gain(0).connect(panner);
+        const fundamental = new Tone.Oscillator({ frequency: 300, type: "sine" })
+          .connect(fundamentalGain)
+          .start();
+        const harmonic = new Tone.Oscillator({ frequency: 900, type: "sine" })
+          .connect(harmonicGain)
+          .start();
+        const corner = new Tone.MetalSynth({
+          envelope: { attack: 0.001, decay: 0.08, release: 0.02 },
+          harmonicity: 4.1,
+          modulationIndex: 18,
+          resonance: 3000,
+          octaves: 1.2,
+          volume: -28,
+        }).toDestination();
+
+        const graph: PolygonGraph = {
+          Tone,
+          fundamental,
+          harmonic,
+          fundamentalGain,
+          harmonicGain,
+          panner,
+          master,
+          corner,
+        };
+
+        // The component can unmount while the audio context is still starting.
+        if (disposedRef.current) {
+          disposeGraph(graph);
+          return null;
+        }
+
+        graphRef.current = graph;
+        setError(null);
+        return graph;
+      } catch (err) {
+        setError((err as Error).message ?? "The audio engine could not be started.");
+        return null;
+      } finally {
+        pendingGraphRef.current = null;
+      }
+    })();
+
+    pendingGraphRef.current = pending;
+    return pending;
   }, []);
 
-  const stop = useCallback(() => {
+  const cancelFrame = useCallback(() => {
     if (frameRef.current !== null) {
       cancelAnimationFrame(frameRef.current);
       frameRef.current = null;
     }
+  }, []);
+
+  const stop = useCallback(() => {
+    // Invalidate any trace that is mid-flight or mid-loop.
+    runIdRef.current += 1;
+    cancelFrame();
     const graph = graphRef.current;
     if (graph) graph.master.gain.rampTo(0, 0.1);
     setActiveShapeId(null);
-  }, []);
+  }, [cancelFrame]);
 
   const scan = useCallback(
     async (shape: Shape2D, loop = false) => {
-      const graph = await ensureGraph();
-      if (!graph) return;
-
-      if (frameRef.current !== null) {
-        cancelAnimationFrame(frameRef.current);
-        frameRef.current = null;
-      }
-
       const path = shape.buildPath(PATH_SAMPLES);
+      if (path.length < 2) return;
+
+      // Claim this run before awaiting, so a later click always wins the race.
+      const runId = runIdRef.current + 1;
+      runIdRef.current = runId;
+
+      const graph = await ensureGraph();
+      if (!graph || disposedRef.current || runIdRef.current !== runId) return;
+
+      cancelFrame();
+
       const corners = cornerIndices(path);
       const ys = path.map((p) => p.y);
       const xs = path.map((p) => p.x);
@@ -136,12 +200,21 @@ export function usePolygonSonification() {
       setActiveShapeId(shape.id);
       graph.master.gain.rampTo(0.2, 0.12);
 
-      const durationMs = shape.scanSeconds * 1000;
+      const durationMs = Math.max(1, shape.scanSeconds * 1000);
       let startedAt = performance.now();
       let lastIndex = -1;
       let cornersPassed = 0;
 
+      const finish = () => {
+        frameRef.current = null;
+        graph.master.gain.rampTo(0, 0.3);
+        setActiveShapeId(null);
+      };
+
       const tick = (now: number) => {
+        // A newer trace, or stop(), has taken over since this frame was queued.
+        if (runIdRef.current !== runId || disposedRef.current) return;
+
         let progress = (now - startedAt) / durationMs;
         if (progress >= 1 && loop) {
           startedAt = now;
@@ -149,20 +222,25 @@ export function usePolygonSonification() {
           lastIndex = -1;
           cornersPassed = 0;
         }
-        progress = Math.min(1, progress);
+        // Clamped at both ends: rAF timestamps are not guaranteed to be later
+        // than the performance.now() taken when the trace was started, and a
+        // negative progress would index the path out of bounds.
+        progress = Math.max(0, Math.min(1, progress));
 
-        const index = Math.min(path.length - 1, Math.floor(progress * (path.length - 1)));
+        const index = Math.max(
+          0,
+          Math.min(path.length - 1, Math.floor(progress * (path.length - 1))),
+        );
         const point = path[index];
+        if (!point) {
+          finish();
+          return;
+        }
 
         const height = normalize(point.y, yMin, yMax);
-        graph.fundamental.frequency.rampTo(
-          MIN_FREQUENCY * Math.pow(MAX_FREQUENCY / MIN_FREQUENCY, height),
-          0.03,
-        );
-        graph.harmonic.frequency.rampTo(
-          MIN_FREQUENCY * Math.pow(MAX_FREQUENCY / MIN_FREQUENCY, height) * 3,
-          0.03,
-        );
+        const frequency = MIN_FREQUENCY * Math.pow(MAX_FREQUENCY / MIN_FREQUENCY, height);
+        graph.fundamental.frequency.rampTo(frequency, 0.03);
+        graph.harmonic.frequency.rampTo(frequency * 3, 0.03);
         // Height also brightens the timbre, so the top of a shape is unmistakable.
         graph.harmonicGain.gain.rampTo(0.06 + height * 0.3, 0.05);
         graph.panner.pan.rampTo(normalize(point.x, xMin, xMax) * 2 - 1, 0.03);
@@ -178,9 +256,7 @@ export function usePolygonSonification() {
         setFrame({ progress, point, cornersPassed });
 
         if (progress >= 1 && !loop) {
-          frameRef.current = null;
-          graph.master.gain.rampTo(0, 0.3);
-          setActiveShapeId(null);
+          finish();
           return;
         }
         frameRef.current = requestAnimationFrame(tick);
@@ -188,30 +264,19 @@ export function usePolygonSonification() {
 
       frameRef.current = requestAnimationFrame(tick);
     },
-    [ensureGraph],
+    [cancelFrame, ensureGraph],
   );
 
   useEffect(() => {
+    disposedRef.current = false;
     return () => {
+      disposedRef.current = true;
+      runIdRef.current += 1;
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
       const graph = graphRef.current;
       graphRef.current = null;
-      if (!graph) return;
-      [
-        graph.fundamental,
-        graph.harmonic,
-        graph.fundamentalGain,
-        graph.harmonicGain,
-        graph.panner,
-        graph.master,
-        graph.corner,
-      ].forEach((node) => {
-        try {
-          node.dispose();
-        } catch {
-          /* already torn down */
-        }
-      });
+      if (graph) disposeGraph(graph);
     };
   }, []);
 

@@ -1,0 +1,31 @@
+{
+  "name": "ondas",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ondas - data sonification for teaching mathematics to visually impaired learners.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "check:math": "tsx scripts/check-math.ts"
+  },
+  "dependencies": {
+    "framer-motion": "^12.23.12",
+    "mathjs": "^15.2.0",
+    "next": "^15.5.3",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "tone": "^15.1.22"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.13",
+    "@types/node": "^24.5.2",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "tailwindcss": "^4.1.13",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.2"
+  }
+}

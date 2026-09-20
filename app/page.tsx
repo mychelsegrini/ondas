@@ -113,8 +113,9 @@ export default function HomePage() {
             move the cursor along the curve, or press{" "}
             <kbd className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-200">Shift + V</kbd> to
             enable the microphone, then say{" "}
-            <span className="font-medium text-zinc-200">Hey Ondas</span> followed by a command. Say{" "}
-            <span className="font-medium text-zinc-200">Hey Ondas, skip</span> to stop this welcome.
+            <span className="font-medium text-zinc-200">hey</span> or{" "}
+            <span className="font-medium text-zinc-200">hi</span> followed by a command. Say{" "}
+            <span className="font-medium text-zinc-200">hey, skip</span> to stop this welcome.
           </li>
         </ol>
       </section>

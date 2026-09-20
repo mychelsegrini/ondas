@@ -133,7 +133,7 @@ open the surface explorer           help
 stop
 ```
 
-Copy `.env.example` to `.env.local` and set `META_API_KEY` to enable the language-model router.
+Copy `.env.example` to `.env.local`. Set `META_API_KEY` to enable Muse, and `ELEVENLABS_API_KEY` for neural spoken feedback.
 
 Spoken mathematics is normalised before parsing, so "sine of x times x" becomes `sin(x)*x` rather
 than `sin(x*x)`, number words become digits, and unclosed parentheses are balanced. Shape names are

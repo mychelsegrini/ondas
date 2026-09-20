@@ -60,7 +60,7 @@ for (const phrase of [
   "open the functions explorer",
   "open the surface explorer",
   "auto play",
-  "hey ondas skip",
+  "hey skip",
   "what 2d shapes are there",
   "set the surface to sine x times cosine y",
   "plot sine of x times cosine of y",

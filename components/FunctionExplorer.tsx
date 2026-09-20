@@ -310,6 +310,23 @@ export function FunctionExplorer() {
   }, [requestedFn, requestedSpeed]);
 
   useEffect(() => {
+    const onEquation = (event: Event) => {
+      const equation = (event as CustomEvent<string>).detail;
+      if (typeof equation === "string" && equation.trim()) applyDraft(equation, xMin, xMax);
+    };
+    const onSpeed = (event: Event) => {
+      const value = Number((event as CustomEvent<number>).detail);
+      if (Number.isFinite(value)) applySpeed(value);
+    };
+    window.addEventListener("ondas-set-equation", onEquation);
+    window.addEventListener("ondas-set-speed", onSpeed);
+    return () => {
+      window.removeEventListener("ondas-set-equation", onEquation);
+      window.removeEventListener("ondas-set-speed", onSpeed);
+    };
+  }, [applyDraft, applySpeed, xMin, xMax]);
+
+  useEffect(() => {
     if (requestedPlay !== "1" || playedFromQuery.current) return;
     if (requestedFn && expression !== requestedFn) return;
     playedFromQuery.current = true;

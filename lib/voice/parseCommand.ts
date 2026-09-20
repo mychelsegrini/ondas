@@ -13,7 +13,7 @@ export type VoiceCommand =
   | { type: "setXMax"; value: number }
   | { type: "setDomain"; min: number; max: number }
   | { type: "setSpeed"; value: number }
-  | { type: "selectShape"; shapeId: string }
+  | { type: "selectShape"; shapeId: string; route?: string }
   | { type: "navigate"; page: VoicePage }
   | { type: "moveCursor"; direction: "left" | "right"; fast: boolean }
   | { type: "jump"; target: "max" | "min" | "inflection" | "start" | "end" | "next" | "previous" }
@@ -129,10 +129,14 @@ const SHAPE_ALIASES: Record<string, string> = {
   "rectangular prism": "rectangular-prism",
   "triangular prism": "triangular-prism",
   "random point": "random-point",
+  "single random point": "random-point",
   random: "random-point",
-  "oblong": "rectangle",
+  oblong: "rectangle",
+  "equilateral triangle": "triangle",
   "three sided": "triangle",
+  "regular pentagon": "pentagon",
   "five sided": "pentagon",
+  "regular hexagon": "hexagon",
   "six sided": "hexagon",
   round: "circle",
 };
@@ -141,7 +145,7 @@ const SHAPE_ALIASES: Record<string, string> = {
  * Resolves a spoken shape name across both libraries. The longest match wins,
  * so "triangular prism" is never mistaken for "triangle".
  */
-function matchShape(text: string): string | null {
+export function matchShape(text: string): string | null {
   const cleaned = text.replace(/\b(the|shape|solid|figure|polygon)\b/g, " ");
   const candidates: Array<[string, string]> = [
     ...[...SHAPES, ...SHAPES_2D].flatMap((shape) => {
@@ -161,6 +165,13 @@ function matchShape(text: string): string | null {
     }
   }
   return best?.id ?? null;
+}
+
+/** Resolves Muse `targetShape` values, including hyphenated ids. */
+export function resolveShapeId(raw: string): string | null {
+  const spaced = raw.trim().toLowerCase().replace(/-/g, " ");
+  if (!spaced) return null;
+  return matchShape(spaced);
 }
 
 export const MIN_SPEED = 0.2;
@@ -317,7 +328,7 @@ export const VOICE_EXAMPLES: string[] = [
   "open the 2d shapes library",
   "set the surface to sine x times cosine y",
   "open the surface explorer",
-  "hey ondas skip",
+  "hey skip",
   "what 2d shapes are there",
   "stop",
 ];

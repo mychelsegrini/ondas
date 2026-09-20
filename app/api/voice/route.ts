@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
 
 import {
-  MAX_SPEED,
-  MIN_SPEED,
   parseVoiceCommand,
   referencesY,
+  resolveShapeId,
   routeToPage,
   clampSpeed,
   pageToRoute,
@@ -21,10 +20,12 @@ export const dynamic = "force-dynamic";
  * overriding these. Defaults target Meta's hosted endpoint.
  */
 const BASE_URL = process.env.META_API_BASE_URL ?? "https://api.meta.ai/v1";
+const API_URL =
+  process.env.META_API_URL ?? `${BASE_URL.replace(/\/+$/, "")}/chat/completions`;
 const MODEL = process.env.META_MODEL ?? "muse-spark-1.3";
 const API_KEY = process.env.META_API_KEY ?? process.env.MODEL_API_KEY;
 /** Voice control must feel instant; a slow model is worse than no model. */
-const TIMEOUT_MS = Number(process.env.META_TIMEOUT_MS ?? 4000);
+const TIMEOUT_MS = Number(process.env.META_TIMEOUT_MS ?? 20000);
 
 export type LlmAction =
   | "NAVIGATE"
@@ -34,13 +35,14 @@ export type LlmAction =
   | "AUTO_PLAY"
   | "SET_SPEED"
   | "HELP"
-  | "SKIP";
+  | "SKIP"
+  | "ERROR";
 
 export interface LlmPayload {
-  route?: string;
-  equation?: string;
-  targetShape?: string;
-  speedMultiplier?: number;
+  route?: string | null;
+  equation?: string | null;
+  targetShape?: string | null;
+  speedMultiplier?: number | null;
 }
 
 export interface LlmCommand {
@@ -51,7 +53,7 @@ export interface LlmCommand {
 }
 
 export interface VoiceRouteResponse {
-  action: LlmAction | "UNKNOWN";
+  action: LlmAction | "UNKNOWN" | "ERROR";
   payload: LlmPayload;
   feedbackText: string;
   command: VoiceCommand;
@@ -59,62 +61,45 @@ export interface VoiceRouteResponse {
   transcript: string;
 }
 
-const SYSTEM_PROMPT = `You are the command router and spoken assistant for "Ondas", an audio application that teaches mathematics to blind and low-vision users by turning it into sound.
+const CONNECT_ERROR =
+  "I'm sorry, I couldn't connect to the server. Please check your API keys.";
 
-The user has already said the wake phrase "Hey Ondas" or "Hi Ondas". You receive only the command that followed it.
+const SYSTEM_PROMPT = `You are Muse, the intelligent voice assistant for 'Ondas', an accessible web application that sonifies mathematics for visually impaired users.
+Your job is to interpret the user's spoken command and route them to the correct action.
 
-Return ONLY a JSON object. No prose, no markdown, no code fences.
+### Critical Rules:
+1. You must output ONLY valid JSON. No markdown formatting, no conversational filler before or after the JSON.
+2. The 'feedbackText' will be read aloud by a TTS engine. It must be concise, natural, and contain NO markdown (no *, #, or \` symbols). Spell out symbols if necessary (e.g., "sine of x", not "sin(x)").
+3. Always be helpful. If the user is confused or asks what they can do, guide them concisely.
 
-Schema:
+### Application Knowledge Base:
+- Sections Available: 2D Functions, Multivariable Calculus, 2D Shapes, and 3D Shapes.
+- 2D Shapes Available: Square, Rectangle, Equilateral Triangle, Circle, Regular Pentagon, Regular Hexagon.
+- 3D Shapes Available: Sphere, Cube, Pyramid, Cylinder, Cone, Ellipsoid, Rectangular Prism, Triangular Prism, and 'Single Random Point'.
+- Functionalities: Users can plot equations, change the speed of the cursor (0.2x to 5x), and explore shapes via spatial audio.
+
+### Expected JSON Schema:
 {
-  "action": "NAVIGATE" | "SET_2D_FUNC" | "SET_MULTI_FUNC" | "SELECT_SHAPE" | "AUTO_PLAY" | "SET_SPEED" | "HELP" | "SKIP" | "UNKNOWN",
+  "action": "NAVIGATE" | "SET_2D_FUNC" | "SET_MULTI_FUNC" | "SELECT_SHAPE" | "SET_SPEED" | "HELP" | "UNKNOWN",
   "payload": {
-    "route": string,
-    "equation": string,
-    "targetShape": string,
-    "speedMultiplier": number
+    "route": "string or null",
+    "equation": "string or null (format for math.js)",
+    "targetShape": "string or null",
+    "speedMultiplier": "number or null"
   },
-  "feedbackText": "The exact sentence the app will read aloud BEFORE it performs the action."
+  "feedbackText": "string (The exact words the TTS should say to the user)"
 }
 
-feedbackText is required. Keep it to one or two short sentences. Speak as a calm assistant.
-
-feedbackText rules:
-- NAVIGATE: confirm before it happens. Examples: "Opening 3D shapes library." "Navigating to Multivariable Calculus." "Opening the functions explorer."
-- SET_2D_FUNC: read the equation clearly. Example: "Plotting function sine of x."
-- SET_MULTI_FUNC: "Plotting the surface sine of x times cosine of y."
-- SELECT_SHAPE: "Selecting the cylinder."
-- AUTO_PLAY: "Playing the curve."
-- SET_SPEED: "Setting speed to two times."
-- SKIP: the user wants to stop the welcome tutorial. "Tutorial skipped."
-- HELP: answer the question clearly and concisely. If they ask "What 2D shapes are there?", say "We currently have a Square, Rectangle, Equilateral Triangle, Circle, Pentagon, and Hexagon." If they ask about 3D shapes, list: random point, sphere, cube, rectangular prism, triangular prism, cylinder, cone, pyramid, ellipsoid. If they just say help, explain that they can navigate, plot equations, select shapes, or auto play.
-- UNKNOWN: "I did not catch that. Say Hey Ondas, help for examples."
-
-Actions:
-- NAVIGATE: payload.route is one of "/", "/functions", "/2d-shapes", "/3d-shapes", "/multivariable".
-  "/functions" explores curves y = f(x). "/multivariable" explores surfaces z = f(x, y).
-  "/2d-shapes" is flat polygons. "/3d-shapes" is solids.
-- SET_2D_FUNC: payload.equation is a mathjs expression in x ONLY. Example: "sin(x)*x".
-- SET_MULTI_FUNC: payload.equation is a mathjs expression in x AND y. Example: "sin(x)*cos(y)".
-  Any equation that mentions y must use SET_MULTI_FUNC, never SET_2D_FUNC.
-- SELECT_SHAPE: payload.targetShape is exactly one of:
-  random-point, sphere, cube, rectangular-prism, triangular-prism, cylinder, cone, pyramid, ellipsoid,
-  square, rectangle, triangle, circle, pentagon, hexagon.
-- AUTO_PLAY: no payload. Use for "play it", "sweep the curve", "auto play".
-- SET_SPEED: payload.speedMultiplier is a number between ${MIN_SPEED} and ${MAX_SPEED}.
-- HELP: questions and "what can I say". Put the full spoken answer in feedbackText. payload may be empty.
-- SKIP: "skip", "skip the tutorial", "stop the intro". payload may be empty.
-
-The input is raw speech, so expect dictated mathematics. Convert it to mathjs syntax:
-"sine of x times x" -> "sin(x)*x"; "x squared plus three" -> "x^2+3";
-"one over x" -> "1/x"; "e to the minus x squared" -> "exp(-x^2)".
-Speech recognition usually transcribes the variable y as the word "why".
-
-Examples:
-"open 3d shapes" -> {"action":"NAVIGATE","payload":{"route":"/3d-shapes"},"feedbackText":"Opening 3D shapes library."}
-"plot sine of x" -> {"action":"SET_2D_FUNC","payload":{"equation":"sin(x)"},"feedbackText":"Plotting function sine of x."}
-"what 2D shapes are there?" -> {"action":"HELP","payload":{},"feedbackText":"We currently have a Square, Rectangle, Equilateral Triangle, Circle, Pentagon, and Hexagon."}
-"skip" -> {"action":"SKIP","payload":{},"feedbackText":"Tutorial skipped."}`;
+### Examples:
+- User: "What 3D shapes do you have?"
+  Response: {"action": "HELP", "payload": {}, "feedbackText": "In the 3D shapes library, we have a Sphere, Cube, Pyramid, Cylinder, Cone, Ellipsoid, Rectangular and Triangular prisms, and a single random spatial point."}
+- User: "Plot x squared plus two"
+  Response: {"action": "SET_2D_FUNC", "payload": {"equation": "x^2 + 2"}, "feedbackText": "Plotting function x squared plus two."}
+- User: "Play the circle"
+  Response: {"action": "SELECT_SHAPE", "payload": {"targetShape": "circle", "route": "/2d-shapes"}, "feedbackText": "Scanning the perimeter of a circle."}
+- User: "Make it faster, 2x speed"
+  Response: {"action": "SET_SPEED", "payload": {"speedMultiplier": 2}, "feedbackText": "Cursor speed set to 2x."}
+`;
 
 const RESPONSE_SCHEMA = {
   type: "object",
@@ -128,39 +113,42 @@ const RESPONSE_SCHEMA = {
         "SET_2D_FUNC",
         "SET_MULTI_FUNC",
         "SELECT_SHAPE",
-        "AUTO_PLAY",
         "SET_SPEED",
         "HELP",
-        "SKIP",
         "UNKNOWN",
       ],
     },
     payload: {
       type: "object",
       additionalProperties: false,
+      required: ["route", "equation", "targetShape", "speedMultiplier"],
       properties: {
-        route: { type: "string" },
-        equation: { type: "string" },
-        targetShape: { type: "string" },
-        speedMultiplier: { type: "number" },
+        route: { type: ["string", "null"] },
+        equation: { type: ["string", "null"] },
+        targetShape: { type: ["string", "null"] },
+        speedMultiplier: { type: ["number", "null"] },
       },
     },
     feedbackText: { type: "string" },
   },
 } as const;
 
-/** Pulls the first JSON object out of a reply that may be wrapped in prose. */
+/** Pulls the first JSON object out of a reply that may be wrapped in markdown fences. */
 function extractJson(text: string): unknown | null {
-  const trimmed = text.trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+  const stripped = text
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
   try {
-    return JSON.parse(trimmed);
+    return JSON.parse(stripped);
   } catch {
-    const start = trimmed.indexOf("{");
-    const end = trimmed.lastIndexOf("}");
+    const start = stripped.indexOf("{");
+    const end = stripped.lastIndexOf("}");
     if (start === -1 || end <= start) return null;
     try {
-      return JSON.parse(trimmed.slice(start, end + 1));
-    } catch {
+      return JSON.parse(stripped.slice(start, end + 1));
+    } catch (parseError) {
+      console.error("❌ Failed to parse LLM output as JSON:", stripped.slice(0, 800), parseError);
       return null;
     }
   }
@@ -215,8 +203,11 @@ function toVoiceCommand(result: LlmCommand, transcript: string): VoiceCommand | 
     return equation ? { type: "setMultiFunction", expression: equation } : null;
   }
   if (action === "SELECT_SHAPE") {
-    const shapeId = payload.targetShape?.trim().toLowerCase().replace(/\s+/g, "-");
-    return shapeId ? { type: "selectShape", shapeId } : null;
+    const shapeId = resolveShapeId(payload.targetShape ?? "");
+    if (!shapeId) return null;
+    const page = payload.route ? routeToPage(payload.route) : null;
+    const route = page === "2d-shapes" || page === "3d-shapes" ? pageToRoute(page) : undefined;
+    return { type: "selectShape", shapeId, route };
   }
   if (action === "AUTO_PLAY") return { type: "autoPlay" };
   if (action === "SET_SPEED") {
@@ -228,6 +219,9 @@ function toVoiceCommand(result: LlmCommand, transcript: string): VoiceCommand | 
     return { type: "help", answer };
   }
   if (action === "SKIP") return { type: "skip" };
+  if (action === "ERROR") {
+    return { type: "help", answer: result.feedbackText?.trim() || CONNECT_ERROR };
+  }
   return { type: "unknown", transcript };
 }
 
@@ -256,53 +250,94 @@ function toLlmShape(command: VoiceCommand): LlmCommand {
   }
 }
 
+function errorPayload(transcript: string): VoiceRouteResponse {
+  return {
+    action: "ERROR",
+    payload: {},
+    feedbackText: CONNECT_ERROR,
+    command: { type: "help", answer: CONNECT_ERROR },
+    source: "local",
+    transcript,
+  };
+}
+
+async function requestCompletion(
+  transcript: string,
+  forceJsonObject: boolean,
+  signal: AbortSignal,
+): Promise<Response> {
+  return fetch(API_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    signal,
+    body: JSON.stringify({
+      model: MODEL,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: transcript },
+      ],
+      max_completion_tokens: 2048,
+      response_format: forceJsonObject
+        ? { type: "json_object" }
+        : {
+            type: "json_schema",
+            json_schema: { name: "ondas_command", strict: true, schema: RESPONSE_SCHEMA },
+          },
+    }),
+  });
+}
+
 async function callModel(transcript: string): Promise<LlmCommand | null> {
-  if (!API_KEY) return null;
+  if (!API_KEY) {
+    console.error("❌ META_API_KEY is missing from environment variables.");
+    return null;
+  }
+
+  console.log("🗣️ Sending to Muse (Meta LLM):", transcript);
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const response = await fetch(`${BASE_URL.replace(/\/+$/, "")}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: transcript },
-        ],
-        // Muse Spark is a reasoning model and is tuned for default sampling,
-        // so temperature is deliberately left unset.
-        max_completion_tokens: 512,
-        response_format: {
-          type: "json_schema",
-          json_schema: { name: "ondas_command", strict: true, schema: RESPONSE_SCHEMA },
-        },
-      }),
-    });
-
+    let response = await requestCompletion(transcript, false, controller.signal);
     if (!response.ok) {
-      console.warn(`[voice] model returned ${response.status}: ${await response.text()}`);
+      const errorText = await response.text();
+      console.error("❌ LLM API Provider Error:", errorText);
+      // Some gateways reject json_schema; retry with generic JSON mode.
+      if (response.status === 400) {
+        response = await requestCompletion(transcript, true, controller.signal);
+        if (!response.ok) {
+          console.error("❌ LLM API Provider Error:", await response.text());
+          return null;
+        }
+      } else {
+        return null;
+      }
+    }
+
+    const body = await response.json();
+    const content = readContent(body);
+    if (!content) {
+      console.error("❌ LLM empty model content:", JSON.stringify(body).slice(0, 800));
       return null;
     }
 
-    const content = readContent(await response.json());
-    if (!content) return null;
-
     const parsed = extractJson(content) as LlmCommand | null;
-    if (!parsed || typeof parsed.action !== "string") return null;
+    if (!parsed || typeof parsed.action !== "string") {
+      console.error("❌ Failed to parse LLM output as JSON:", content.slice(0, 800));
+      return null;
+    }
     const feedbackText =
       typeof parsed.feedbackText === "string" && parsed.feedbackText.trim()
         ? parsed.feedbackText.trim()
         : "";
-    return { action: parsed.action, payload: parsed.payload ?? {}, feedbackText };
+    const command = { action: parsed.action, payload: parsed.payload ?? {}, feedbackText };
+    console.log("✅ LLM Successfully Parsed:", command);
+    return command;
   } catch (err) {
-    // Timeouts and network faults fall through to the deterministic parser.
-    console.warn("[voice] model call failed:", (err as Error).message);
+    console.error("❌ Internal Server Error in /api/voice:", err);
     return null;
   } finally {
     clearTimeout(timeout);
@@ -314,43 +349,64 @@ export async function POST(request: Request) {
   try {
     const body = (await request.json()) as { transcript?: unknown };
     transcript = typeof body.transcript === "string" ? body.transcript.trim() : "";
-  } catch {
-    return NextResponse.json({ error: "Expected a JSON body." }, { status: 400 });
+  } catch (error) {
+    console.error("❌ Voice Pipeline Error:", error);
+    return NextResponse.json(errorPayload(""));
   }
 
   if (!transcript) {
-    return NextResponse.json({ error: "A non-empty transcript is required." }, { status: 400 });
+    return NextResponse.json(errorPayload(""));
   }
   if (transcript.length > 500) transcript = transcript.slice(0, 500);
 
-  const llm = await callModel(transcript);
-  const fromLlm = llm ? toVoiceCommand(llm, transcript) : null;
+  try {
+    const llm = await callModel(transcript);
+    const fromLlm = llm ? toVoiceCommand(llm, transcript) : null;
 
-  // The local parser is the safety net. Voice is a primary input for this
-  // app's users, so it has to keep working with no key, no network, or a
-  // model reply that does not survive validation.
-  if (fromLlm && fromLlm.type !== "unknown") {
-    const feedbackText = llm!.feedbackText || feedbackFor(fromLlm);
-    const payload: VoiceRouteResponse = {
-      action: llm!.action,
-      payload: llm!.payload ?? {},
-      feedbackText,
-      command: fromLlm,
+    if (fromLlm && fromLlm.type !== "unknown") {
+      const feedbackText = llm!.feedbackText || feedbackFor(fromLlm);
+      const payload: VoiceRouteResponse = {
+        action: llm!.action,
+        payload: llm!.payload ?? {},
+        feedbackText,
+        command: fromLlm,
+        source: "llm",
+        transcript,
+      };
+      console.log("[voice] source=llm action=", payload.action);
+      return NextResponse.json(payload);
+    }
+
+    const local = parseVoiceCommand(transcript);
+    if (local.type !== "unknown") {
+      const shape = toLlmShape(local);
+      const payload: VoiceRouteResponse = {
+        action: shape.action,
+        payload: shape.payload,
+        feedbackText: shape.feedbackText,
+        command: local,
+        source: "local",
+        transcript,
+      };
+      console.log("[voice] source=local action=", payload.action);
+      return NextResponse.json(payload);
+    }
+
+    if (!llm) return NextResponse.json(errorPayload(transcript));
+
+    const unclear =
+      llm.feedbackText?.trim() ||
+      "I did not catch that. Try saying hey, help.";
+    return NextResponse.json({
+      action: "UNKNOWN",
+      payload: {},
+      feedbackText: unclear,
+      command: { type: "help", answer: unclear },
       source: "llm",
       transcript,
-    };
-    return NextResponse.json(payload);
+    } satisfies VoiceRouteResponse);
+  } catch (error) {
+    console.error("❌ Voice Pipeline Error:", error);
+    return NextResponse.json(errorPayload(transcript));
   }
-
-  const local = parseVoiceCommand(transcript);
-  const shape = toLlmShape(local);
-  const payload: VoiceRouteResponse = {
-    action: shape.action,
-    payload: shape.payload,
-    feedbackText: shape.feedbackText,
-    command: local,
-    source: "local",
-    transcript,
-  };
-  return NextResponse.json(payload);
 }

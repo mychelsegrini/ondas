@@ -96,6 +96,23 @@ export function SurfaceExplorer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requested]);
 
+  useEffect(() => {
+    const onEquation = (event: Event) => {
+      const equation = (event as CustomEvent<string>).detail;
+      if (typeof equation === "string" && equation.trim()) applyDraft(equation, domain, turns);
+    };
+    const onSpeed = (event: Event) => {
+      const value = Number((event as CustomEvent<number>).detail);
+      if (Number.isFinite(value)) applySpeed(value);
+    };
+    window.addEventListener("ondas-set-equation", onEquation);
+    window.addEventListener("ondas-set-speed", onSpeed);
+    return () => {
+      window.removeEventListener("ondas-set-equation", onEquation);
+      window.removeEventListener("ondas-set-speed", onSpeed);
+    };
+  }, [applyDraft, applySpeed, domain, turns]);
+
   useVoiceHandler((command) => {
     switch (command.type) {
       case "setMultiFunction":

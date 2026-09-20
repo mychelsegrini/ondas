@@ -43,13 +43,13 @@ export function cannedHelpAnswer(question: string): string | null {
     return "The surface explorer plots z equals f of x and y, and scans it along a spiral. Try saying plot sine of x times cosine of y.";
   }
   if (/\b(how|what can i|commands|help)\b/.test(text)) {
-    return "Say Hey Ondas, then a command. You can navigate, plot an equation, select a shape, auto play, or ask what shapes we have.";
+    return "Say hey, then a command. You can navigate, plot an equation, select a shape, auto play, or ask what shapes we have.";
   }
   return null;
 }
 
 export function defaultHelpText(): string {
-  return "Say Hey Ondas followed by a command to navigate, plot equations, or ask for help. For example: Hey Ondas, open 3D shapes. Or Hey Ondas, plot sine of x.";
+  return "Say hey or hi followed by a command to navigate, plot equations, or ask for help. For example: hey, open 3D shapes. Or hey, plot sine of x.";
 }
 
 /** Spoken confirmation for a parsed command when the model did not supply one. */
@@ -86,6 +86,6 @@ export function feedbackFor(command: VoiceCommand): string {
     case "jump":
       return `Jumping to the ${command.target}.`;
     case "unknown":
-      return "I did not catch that. Say Hey Ondas, help for examples.";
+      return "I did not catch that. Say hey, help for examples.";
   }
 }

@@ -7,6 +7,7 @@ import { useVoiceCommands } from "@/contexts/VoiceContext";
 export function VoiceBar() {
   const {
     isSupported,
+    isAudioReady,
     isListening,
     isRouting,
     isAwake,
@@ -23,7 +24,7 @@ export function VoiceBar() {
         <button
           type="button"
           onClick={toggleListening}
-          disabled={!isSupported}
+          disabled={!isSupported || !isAudioReady}
           aria-pressed={isListening}
           className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-colors ${
             isListening
@@ -39,7 +40,7 @@ export function VoiceBar() {
               isListening ? "animate-pulse bg-zinc-950" : "bg-emerald-400"
             }`}
           />
-          {isListening ? (isAwake ? "Heard Hey Ondas" : "Listening for Hey Ondas") : "Start voice commands"}
+          {isListening ? (isAwake ? "Heard hey or hi" : "Listening for hey or hi") : "Start voice commands"}
           <kbd className="ml-1 rounded border border-current/30 px-1.5 py-0.5 text-[10px] font-medium opacity-70">
             Shift + V
           </kbd>
@@ -89,8 +90,8 @@ export function VoiceBar() {
               </motion.p>
             ) : (
               <p className="truncate text-sm text-zinc-500">
-                Try: <span className="font-mono text-zinc-400">Hey Ondas, plot sine of x</span> ·{" "}
-                <span className="font-mono text-zinc-400">Hey Ondas, help</span>
+                Try: <span className="font-mono text-zinc-400">Hey, plot sine of x</span> ·{" "}
+                <span className="font-mono text-zinc-400">Hey, help</span>
               </p>
             )}
           </AnimatePresence>

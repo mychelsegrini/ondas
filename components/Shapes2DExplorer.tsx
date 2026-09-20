@@ -50,6 +50,18 @@ export function Shapes2DExplorer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestedShape]);
 
+  useEffect(() => {
+    const onShape = (event: Event) => {
+      const id = (event as CustomEvent<string>).detail;
+      const shape = typeof id === "string" ? getShape2D(id) : undefined;
+      if (!shape) return;
+      buttonRefs.current[shape.id]?.focus();
+      startScan(shape);
+    };
+    window.addEventListener("ondas-select-shape", onShape);
+    return () => window.removeEventListener("ondas-select-shape", onShape);
+  }, [startScan]);
+
   useVoiceHandler((command) => {
     if (command.type === "selectShape") {
       const shape = getShape2D(command.shapeId);
